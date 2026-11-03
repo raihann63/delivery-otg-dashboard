@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Delivery OTG Dashboard</title>
+  <?!= include_('Styles') ?>
+</head>
+<body>
+  <!-- Application shell (Step 1). Behaviour: App.html (Steps 2-3). Styling: Styles.html (Step 2). -->
+  <a href="#content" class="skip-link">Skip to content</a>
+  <noscript>This dashboard needs JavaScript enabled.</noscript>
+
+  <div id="app" class="app-shell">
+    <aside id="sidebar" aria-label="Primary">
+      <div class="brand">Delivery - On The Go<span class="brand-sub">Operations dashboard</span></div>
+      <nav id="nav" aria-label="Dashboard pages">
+        <ul>
+          <li><button type="button" data-nav="overview">Hub Operations Overview</button></li>
+          <li><button type="button" data-nav="hubPerformance">Hub Performance</button></li>
+          <li><button type="button" data-nav="holdsReturns">Holds and Returns</button></li>
+          <li><button type="button" data-nav="staffing">Staffing and Hiring Plan</button></li>
+        </ul>
+      </nav>
+    </aside>
+
+    <div class="app-main">
+      <header id="topbar">
+        <button type="button" id="nav-toggle" aria-controls="sidebar" aria-expanded="false">Menu</button>
+        <h1 id="page-title">Hub Operations Overview</h1>
+        <p id="period-context">Actuals 13-26 Oct 2026 (Week 1: 13-19 Oct, Week 2: 20-26 Oct) &middot; Forecast 27 Oct-23 Nov 2026</p>
+      </header>
+
+      <section id="filter-bar" aria-label="Global filters"></section>
+
+      <main id="content" tabindex="-1">
+        <div id="status-region" role="status" aria-live="polite"></div>
+        <?!= include_('PageOverview') ?>
+        <?!= include_('PageHubPerformance') ?>
+        <?!= include_('PageHoldsReturns') ?>
+        <?!= include_('PageStaffing') ?>
+      </main>
+    </div>
+  </div>
+
+  <?!= include_('Charts') ?>
+  <?!= include_('App') ?>
+</body>
+</html>

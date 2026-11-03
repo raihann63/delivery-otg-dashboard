@@ -1,0 +1,157 @@
+<section id="page-overview" data-page="overview" data-partial="PageOverview" hidden aria-label="Overview: Where to Act">
+  <div class="page">
+    <div class="page-head">
+      <div>
+        <h2>Overview: Where to Act</h2>
+        <p class="page-lede">Which hubs are overloaded or short of agents, how utilisation changed from Week 1 to Week 2, and the approved hiring actions. Figures come from the live backend; each is labelled by its status.</p>
+      </div>
+      <div class="cluster" aria-label="Status labels">
+        <span class="badge badge-approved">Approved Result</span><span class="badge badge-additional">Additional Metric</span><span class="badge badge-forecast">Forecast</span><span class="badge badge-assumption">Assumption</span><span class="badge badge-pending">Pending Approval</span>
+      </div>
+    </div>
+    <div id="ov-body" class="stack" aria-live="polite"></div>
+  </div>
+  <script>
+  (function () {
+    'use strict';
+    var TARGET = 85;
+    var body = document.getElementById('ov-body');
+    function U() { return window.DashUtil; }
+    function e(s) { return U().esc(s); }
+    function isNum(v) { return v !== null && v !== undefined && v !== '' && isFinite(Number(v)); }
+    function badge(kind, text) { return '<span class="badge badge-' + kind + '">' + e(text) + '</span>'; }
+
+    function kpi(label, valueHtml, context, kind, kindText, tone) {
+      return '<div class="kpi' + (tone ? ' tone-' + tone : '') + '"><span class="kpi-label">' + e(label) + '</span><span class="kpi-value">' + valueHtml +
+        '</span><span class="kpi-context">' + e(context) + '</span>' + badge(kind, kindText) + '</div>';
+    }
+
+    function meter(pct, tone, withTarget) {
+      var w = isNum(pct) ? Math.max(0, Math.min(100, Number(pct))) : 0;
+      return '<div class="meter ' + tone + '" role="img" aria-label="' + e(U().pct(pct)) + (withTarget ? ' against the ' + TARGET + '% target' : '') + '"><span style="width:' + w + '%"></span>' +
+        (withTarget ? '<i class="meter-target" style="left:' + TARGET + '%"></i>' : '') + '</div>';
+    }
+    function utilTone(pct) { return isNum(pct) && Number(pct) > TARGET ? 'meter-crit' : ''; }
+
+    function priorityOrder(rows) {
+      function key(r) { return [isNum(r.shortfall_hub) ? -Number(r.shortfall_hub) : 1, isNum(r.week2_utilisation_pct) ? -Number(r.week2_utilisation_pct) : 1]; }
+      return rows.slice().sort(function (a, b) { var x = key(a), y = key(b); return x[0] - y[0] || x[1] - y[1] || String(a.hub_id).localeCompare(String(b.hub_id)); });
+    }
+
+    function kpiSection(k) {
+      var sf = k.weeklyShortfallHubWise || [];
+      var hasGap = sf.some(function (v) { return Number(v) > 0; });
+      var same = sf.length > 0 && sf.every(function (v) { return Number(v) === Number(sf[0]); });
+      var peak = sf.length ? Math.max.apply(null, sf.map(Number)) : null;
+      var sfHtml = peak === null ? 'n/a' : U().int(peak) + '<span class="kpi-unit">agents</span>';
+      var sfCtx = !sf.length ? '' : (same ? 'Short in each of the 4 forecast weeks' :
+        'Peak week. By week: ' + sf.map(function (v, i) { return 'Wk' + (i + 1) + ' ' + U().int(v); }).join(', '));
+      return '<div class="grid-kpi">' +
+        kpi('Orders received', U().int(k.totalOrders), 'Whole period, 13-26 Oct', 'additional', 'Additional Metric') +
+        kpi('Delivery attempts', U().int(k.totalAttempts), 'Every attempt made, incl. retries', 'additional', 'Additional Metric') +
+        kpi('Attempt success rate', U().pct(k.deliveredShareOfAttempts), 'Delivered / all attempts', 'additional', 'Additional Metric') +
+        kpi('Active agents', U().int(k.activeAgents), 'On the roster today', 'approved', 'Approved Result') +
+        kpi('Agent shortfall', sfHtml, sfCtx || 'Staffing gap vs forecast', 'forecast', 'Forecast', hasGap ? 'crit' : 'good') +
+        // এখানে টেক্সট আপডেট করা হলো
+        kpi('Recommended hires', U().int(k.approvedHires), '2 New + 2 Transfer + 1 Cond.', 'approved', 'Approved Result', 'info') + '</div>';
+    }
+
+    function scorecardSection(rows) {
+      var tr = priorityOrder(rows).map(function (r) {
+        var above = r.week2_target_status === 'ABOVE TARGET';
+        var gap = isNum(r.shortfall_hub) && Number(r.shortfall_hub) > 0;
+        var delta = (isNum(r.week1_utilisation_pct) && isNum(r.week2_utilisation_pct)) ? Number(r.week2_utilisation_pct) - Number(r.week1_utilisation_pct) : null;
+        var deltaTxt = delta === null ? 'n/a' : (delta > 0 ? '+' : '') + U().dec1(delta) + ' pp';
+        return '<tr class="' + (gap ? 'row-crit' : (above ? 'row-warn' : '')) + '">' +
+          '<td class="nowrap"><strong>' + e(r.hub_id) + '</strong><span class="cell-sub">' + e(r.hub_name) + ' &middot; ' + e(r.cluster) + '</span></td>' +
+          '<td class="num nowrap">' + U().pct(r.week1_utilisation_pct) + '</td>' +
+          '<td class="num nowrap">' + U().pct(r.week2_utilisation_pct) + '<span class="cell-sub">' + e(deltaTxt) + '</span></td>' +
+          '<td>' + (r.week2_target_status ? '<span class="chip ' + (above ? 'chip-crit' : 'chip-good') + '">' + e(r.week2_target_status) + '</span>' : 'n/a') + '</td>' +
+          '<td class="num">' + U().pct(r.agent_side_share_pct) + '</td>' +
+          '<td class="num nowrap">' + U().int(r.active_agents) + ' / ' + U().int(r.peak_required_hub) + '</td>' +
+          '<td class="num nowrap">' + (isNum(r.shortfall_hub) ? '<span class="chip ' + (gap ? 'chip-crit' : 'chip-good') + '">' + (gap ? 'Short ' + U().int(r.shortfall_hub) : 'No gap') + '</span>' : 'n/a') + '</td>' +
+          '<td>' + e(r.approved_action || 'n/a') + '</td></tr>';
+      }).join('');
+      return '<div class="card card-flush"><div class="card-head"><div><h3 class="card-title">Hub priority scorecard</h3><p class="card-sub">Where to act first. Sorted by peak shortfall, then Week 2 utilisation (display order only).</p></div>' +
+        '<div class="cluster">' + badge('approved', 'Utilisation: Approved Result') + badge('forecast', 'Shortfall: Forecast') + '</div></div>' +
+        '<div class="card-body"><div class="table-wrap" tabindex="0" role="region" aria-label="Hub priority scorecard"><table class="table"><thead><tr>' +
+        '<th>Hub</th><th class="num">Wk 1 util.</th><th class="num">Wk 2 util.</th><th>Wk 2 vs ' + TARGET + '%</th><th class="num">Agent-side hold share</th>' +
+        '<th class="num">Active / needed at peak</th><th class="num">Shortfall</th><th>Approved action</th></tr></thead><tbody>' + tr + '</tbody></table></div></div>' +
+        '<div class="card-foot">Utilisation = Assigned attempts / (available agent-days x 40). Wk = week. Required and shortfall are the peak across forecast weeks. The change under Wk 2 is Week 2 minus Week 1 in percentage points (derived here). Agent-side holds = share of holds with an agent-side reason (Week 2). Peak required and shortfall use the Q7 hub-wise ratio forecast.</div></div>';
+    }
+
+    function comparisonSection(rows) {
+      var items = rows.map(function (r) {
+        return '<li style="list-style:none;padding:.55rem 0;border-bottom:1px solid var(--border)"><div class="cluster" style="justify-content:space-between"><strong>' + e(r.hub_id) + '</strong><span class="legend-note">' + e(r.hub_name) + '</span></div>' +
+          '<div style="display:grid;grid-template-columns:4.5rem 1fr 4rem;gap:.35rem .6rem;align-items:center;margin-top:.35rem;font-size:.8rem">' +
+          '<span class="text-muted">Week 1</span>' + meter(r.week1_utilisation_pct, utilTone(r.week1_utilisation_pct), true) + '<span class="num" style="text-align:right">' + U().pct(r.week1_utilisation_pct) + '</span>' +
+          '<span class="text-muted">Week 2</span>' + meter(r.week2_utilisation_pct, utilTone(r.week2_utilisation_pct), true) + '<span class="num" style="text-align:right">' + U().pct(r.week2_utilisation_pct) + '</span></div></li>';
+      }).join('');
+      return '<div class="card"><div class="card-head"><div><h3 class="card-title">Utilisation: Week 1 vs Week 2</h3><p class="card-sub">The ' + TARGET + '% planning target is marked in the chart.</p></div>' + badge('approved', 'Approved Result') + '</div>' +
+        '<div class="card-body"><div data-chart-host="overviewUtil" data-chart-page="overview"><ul style="margin:0;padding:0">' + items + '</ul></div><p class="legend-note" style="margin-top:.6rem">Both weeks always shown; the week filter does not apply. In the static view, bars are capped at 100% and the number is the true value.</p></div></div>';
+    }
+
+    function pressureSection(rows) {
+      var max = 0;
+      rows.forEach(function (r) { [r.active_agents, r.peak_required_hub].forEach(function (v) { if (isNum(v) && Number(v) > max) { max = Number(v); } }); });
+      function pct(v) { return max && isNum(v) ? (100 * Number(v) / max) : 0; }
+      var items = rows.map(function (r) {
+        var gap = isNum(r.shortfall_hub) && Number(r.shortfall_hub) > 0;
+        return '<li style="list-style:none;padding:.55rem 0;border-bottom:1px solid var(--border)"><div class="cluster" style="justify-content:space-between"><strong>' + e(r.hub_id) + '</strong>' +
+          (isNum(r.shortfall_hub) ? '<span class="chip ' + (gap ? 'chip-crit' : 'chip-good') + '">' + (gap ? 'Short ' + U().int(r.shortfall_hub) : 'No gap') + '</span>' : '') + '</div>' +
+          '<div style="display:grid;grid-template-columns:5.5rem 1fr 2.5rem;gap:.35rem .6rem;align-items:center;margin-top:.35rem;font-size:.8rem">' +
+          '<span class="text-muted">Active</span>' + meter(pct(r.active_agents), '', false).replace(/aria-label="[^"]*"/, 'aria-label="' + e(U().int(r.active_agents)) + ' active agents"') + '<span class="num" style="text-align:right">' + U().int(r.active_agents) + '</span>' +
+          '<span class="text-muted">Peak required</span>' + meter(pct(r.peak_required_hub), gap ? 'meter-warn' : 'meter-good', false).replace(/aria-label="[^"]*"/, 'aria-label="' + e(U().int(r.peak_required_hub)) + ' agents required at peak"') + '<span class="num" style="text-align:right">' + U().int(r.peak_required_hub) + '</span></div></li>';
+      }).join('');
+      return '<div class="card"><div class="card-head"><div><h3 class="card-title">Staffing pressure</h3><p class="card-sub">Active agents against the peak agents required in the 4-week forecast.</p></div>' + badge('forecast', 'Forecast') + '</div>' +
+        '<div class="card-body"><div data-chart-host="overviewStaffing" data-chart-page="overview"><ul style="margin:0;padding:0">' + items + '</ul></div><p class="legend-note" style="margin-top:.6rem">Required = expected orders x hub attempts-per-order ratio / (7 x 34). The ratio is a historical assumption, not a guaranteed future retry rate.</p></div></div>';
+    }
+
+    function hiringSection(rows, kpis) {
+      var plan = rows.filter(function (r) { return isNum(r.approved_hires) && Number(r.approved_hires) > 0; });
+      var lis = plan.length ? plan.map(function (r) {
+        return '<li><strong>' + e(r.hub_id) + '</strong>: ' + e(r.approved_action) + ' (' + U().int(r.approved_hires) + ' agent' + (Number(r.approved_hires) === 1 ? '' : 's') + ')</li>';
+      }).join('') : '<li>No approved hires in the selected hubs.</li>';
+      return '<div class="card"><div class="card-head"><div><h3 class="card-title">Approved hiring and action summary</h3><p class="card-sub">Q8 & Q9 decision, up to ' + U().int(kpis.approvedHires) + ' agents in the selected hubs.</p></div>' + badge('approved', 'Approved Result') + '</div>' +
+        '<div class="card-body stack"><ul style="margin:0;padding-left:1.1rem">' + lis + '</ul>' +
+        '<p class="legend-note">The H03 hire is conditional on reviewing its retry rate within the first two weeks (approved Q8).</p>' +
+        '<div class="callout callout-warn"><div class="cluster">' + badge('assumption', 'Assumption') + '<strong>Budget release (Q9)</strong></div>' +
+        '<p>November 1-30, 2026 is an assumption for "next month". No affordable hiring count is certified, and one-time costs are unavailable and not estimated. Details are on the Staffing and Hiring Plan page.</p></div>' +
+        '<div class="callout callout-pending"><div class="cluster">' + badge('pending', 'Pending Approval') + '<strong>Risk watch list (Q10)</strong></div><p>The watch-list triggers are recommendations awaiting approval, not company rules.</p></div>' +
+        '<div><button type="button" class="btn btn-sm" id="ov-goto-staffing">Open Staffing and Hiring Plan</button></div></div></div>';
+    }
+
+    function notesSection(env) {
+      function list(a) { return (a && a.length) ? '<ul>' + a.map(function (t) { return '<li>' + e(t) + '</li>'; }).join('') + '</ul>' : ''; }
+      return '<div class="card"><div class="card-body"><details><summary style="cursor:pointer;font-weight:600">Definitions, notes and limitations</summary>' +
+        '<div class="stack" style="margin-top:.6rem"><div><div class="section-title">Notes for this page</div>' + list(env.data.notes) + '</div>' +
+        '<div><div class="section-title">Definitions</div>' + list(env.definitions) + '</div>' +
+        '<div><div class="section-title">Limitations</div>' + list(env.limitations) + '</div></div></details>' +
+        '<p class="legend-note" style="margin-top:.5rem">Generated ' + e(env.generatedAt || '') + ' &middot; period ' + e(env.period ? env.period.start + ' to ' + env.period.end : '') + '</p></div></div>';
+    }
+
+    function render(env) {
+      var d = env && env.data;
+      if (!d || !d.scorecard || !d.scorecard.length) {
+        body.innerHTML = '<div class="empty-state"><strong>No hubs match the current filters</strong><span>Reset the filters or choose another hub or cluster.</span></div>';
+        return;
+      }
+      body.innerHTML = kpiSection(d.kpis || {}) + scorecardSection(d.scorecard) +
+        '<div class="grid-2">' + comparisonSection(d.scorecard) + pressureSection(d.scorecard) + '</div>' +
+        hiringSection(d.scorecard, d.kpis || {}) + notesSection(env);
+      var go = document.getElementById('ov-goto-staffing');
+      if (go) { go.addEventListener('click', function () { window.DashApp.showPage('staffing'); }); }
+    }
+
+    function onData(detail) {
+      if (detail.page !== 'overview') { return; }
+      if (detail.status === 'ready' && detail.envelope) { render(detail.envelope); }
+      else if (detail.status === 'error') { body.textContent = ''; }
+    }
+    document.addEventListener('dash:data', function (ev) { onData(ev.detail); });
+    document.addEventListener('DOMContentLoaded', function () {
+      if (window.DashApp) { var s = window.DashApp.getPageState('overview'); onData({ page: 'overview', status: s.status, envelope: s.envelope }); }
+    });
+  })();
+  </script>
+</section>

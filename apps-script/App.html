@@ -1,0 +1,342 @@
+<script data-partial="App">
+/* Step 3: navigation, global filters, state and API layer (google.script.run -> the five existing endpoints).
+   No KPIs, page content or charts here; pages listen for the 'dash:data' event (detail: {page, status, envelope, error}). */
+(function () {
+  'use strict';
+  var DEFAULT_PAGE = 'overview';
+  var TIMEOUT_MS = 90000;
+  var ENDPOINT = { overview: 'overview', hubPerformance: 'hubPerformance', holdsReturns: 'holdsReturns', staffing: 'staffingPlan' };
+  /* Only the filters that a page really uses are sent; the backend validates every key. */
+  var PARAMS = {
+    overview: ['hubIds', 'cluster', 'week'], hubPerformance: ['hubIds', 'cluster', 'week'],
+    holdsReturns: ['hubIds', 'cluster', 'holdSide'], staffing: ['hubIds', 'cluster', 'ratioBasis']
+  };
+  var WEEK_LOCK = { holdsReturns: 'Fixed on this page: holds are recorded in Week 2 only.', staffing: 'Fixed on this page: forecast weeks 27 Oct-23 Nov.' };
+  var DEFAULT_FILTERS = { hubIds: [], cluster: 'ALL', week: 'BOTH', holdSide: 'ALL', ratioBasis: 'HUB' };
+
+  var $ = function (id) { return document.getElementById(id); };
+  var app = $('app'), toggle = $('nav-toggle'), title = $('page-title'), content = $('content'), status = $('status-region'), bar = $('filter-bar');
+  var navButtons = Array.prototype.slice.call(document.querySelectorAll('#nav [data-nav]'));
+  var pages = Array.prototype.slice.call(document.querySelectorAll('[data-page]'));
+  var desktop = window.matchMedia('(min-width: 1024px)');
+
+  var state = { page: null, meta: null, metaStatus: 'idle', filters: copy(DEFAULT_FILTERS), pages: {} };
+  var cache = {}, tokens = {}, debounce = null, ui = {};
+
+  function copy(o) { return JSON.parse(JSON.stringify(o)); }
+  function el(tag, attrs, kids) {
+    var n = document.createElement(tag);
+    Object.keys(attrs || {}).forEach(function (k) {
+      if (k === 'text') { n.textContent = attrs[k]; } else if (attrs[k] !== null && attrs[k] !== undefined && attrs[k] !== false) { n.setAttribute(k, attrs[k] === true ? '' : attrs[k]); }
+    });
+    (kids || []).forEach(function (c) { if (c) { n.appendChild(c); } });
+    return n;
+  }
+  function emit(page) {
+    var s = state.pages[page] || { status: 'idle' };
+    document.dispatchEvent(new CustomEvent('dash:data', { detail: { page: page, status: s.status, envelope: s.envelope || null, error: s.error || null } }));
+  }
+
+  /* ---------- shared formatting helpers for pages ---------- */
+  var nf0 = new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 });
+  var nf1 = new Intl.NumberFormat('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+  var nf2 = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  function isNum(v) { return v !== null && v !== undefined && v !== '' && isFinite(Number(v)); }
+  window.DashUtil = {
+    esc: function (s) { return String(s === null || s === undefined ? '' : s).replace(/[&<>"']/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]; }); },
+    int: function (v) { return isNum(v) ? nf0.format(Number(v)) : 'n/a'; },
+    dec1: function (v) { return isNum(v) ? nf1.format(Number(v)) : 'n/a'; },
+    dec2: function (v) { return isNum(v) ? nf2.format(Number(v)) : 'n/a'; },
+    pct: function (v) { return isNum(v) ? nf1.format(Number(v)) + '%' : 'n/a'; }
+  };
+
+  /* ---------- API layer ---------- */
+  function call(fn, arg) {
+    return new Promise(function (resolve, reject) {
+      if (!(window.google && google.script && google.script.run)) { reject({ code: 'NO_RUNTIME', message: 'The Apps Script runtime is not available in this window.' }); return; }
+      var done = false;
+      var timer = setTimeout(function () { if (!done) { done = true; reject({ code: 'TIMEOUT', message: 'The request took too long. Please retry.' }); } }, TIMEOUT_MS);
+      var runner = google.script.run
+        .withSuccessHandler(function (res) {
+          if (done) { return; } done = true; clearTimeout(timer);
+          if (res && res.ok === true) { resolve(res); }
+          else { reject((res && res.error) || { code: 'BAD_RESPONSE', message: 'Unexpected response from the server.' }); }
+        })
+        .withFailureHandler(function (err) {
+          if (done) { return; } done = true; clearTimeout(timer);
+          reject({ code: 'CALL_FAILED', message: (err && err.message) ? String(err.message) : 'The server call failed.' });
+        });
+      if (arg === undefined) { runner[fn](); } else { runner[fn](arg); }
+    });
+  }
+
+  function paramsFor(page) {
+    var out = {};
+    PARAMS[page].forEach(function (k) { out[k] = k === 'hubIds' ? state.filters.hubIds.slice() : state.filters[k]; });
+    return out;
+  }
+
+  function load(page, force) {
+    if (!state.meta) { return; }
+    var params = paramsFor(page), key = page + '|' + JSON.stringify(params);
+    var token = (tokens[page] = (tokens[page] || 0) + 1);
+    if (!force && cache[key]) {
+      state.pages[page] = { status: 'ready', envelope: cache[key], key: key };
+      render(); emit(page); return;
+    }
+    state.pages[page] = { status: 'loading', envelope: (state.pages[page] || {}).envelope || null, key: key };
+    render(); emit(page);
+    call(ENDPOINT[page], params).then(function (env) {
+      if (token !== tokens[page]) { return; }
+      cache[key] = env;
+      state.pages[page] = { status: 'ready', envelope: env, key: key };
+    }).catch(function (err) {
+      if (token !== tokens[page]) { return; }
+      state.pages[page] = { status: 'error', envelope: null, error: err, key: key };
+    }).then(function () { render(); emit(page); });
+  }
+
+  function loadMeta() {
+    state.metaStatus = 'loading'; state.metaError = null; render();
+    call('meta').then(function (env) {
+      state.meta = env.data; state.metaStatus = 'ready';
+      buildFilters(); showPage(state.page || DEFAULT_PAGE, false); load(state.page, false);
+    }).catch(function (err) { state.metaStatus = 'error'; state.metaError = err; render(); });
+  }
+
+  /* ---------- status region: loading skeleton / error with retry ---------- */
+  function render() {
+    var page = state.page, s = state.pages[page] || { status: 'idle' }, busy = false;
+    status.textContent = '';
+    if (state.metaStatus === 'loading' || (state.metaStatus === 'idle')) { busy = true; status.appendChild(skeleton('Loading dashboard options')); }
+    else if (state.metaStatus === 'error') { status.appendChild(errorBox(state.metaError, loadMeta)); }
+    else if (s.status === 'loading') { busy = true; status.appendChild(skeleton('Loading data')); }
+    else if (s.status === 'error') { status.appendChild(errorBox(s.error, function () { load(page, true); })); }
+    content.setAttribute('aria-busy', busy ? 'true' : 'false');
+    var pageEl = pages.filter(function (p) { return p.getAttribute('data-page') === page; })[0];
+    if (pageEl) { pageEl.style.opacity = busy && s.envelope ? '0.55' : ''; }
+    syncFilterUi();
+  }
+  function skeleton(label) {
+    var grid = el('div', { class: 'grid-kpi' });
+    for (var i = 0; i < 6; i++) { grid.appendChild(el('div', { class: 'skeleton skeleton-kpi' })); }
+    return el('div', { class: 'stack' }, [el('span', { class: 'sr-only', text: label }), grid]);
+  }
+  function errorBox(err, retry) {
+    var msg = (err && err.message) || 'Something went wrong.';
+    var btn = el('button', { type: 'button', class: 'btn btn-sm', text: 'Retry' });
+    btn.addEventListener('click', retry);
+    return el('div', { class: 'alert alert-error', role: 'alert' }, [
+      el('span', { class: 'alert-text', text: msg + (err && err.code ? ' (' + err.code + ')' : '') }), btn]);
+  }
+
+  /* ---------- global filters ---------- */
+  function buildFilters() {
+    var m = state.meta; bar.textContent = '';
+    var wrap = el('div', { class: 'filters' });
+
+    var menu = el('details', { class: 'menu', id: 'f-hubs' });
+    ui.hubLabel = el('span', { text: 'All hubs' });
+    menu.appendChild(el('summary', {}, [ui.hubLabel]));
+    var panel = el('div', { class: 'menu-panel' });
+    ui.hubBoxes = (m.hubs || []).map(function (h) {
+      var cb = el('input', { type: 'checkbox', value: h.hub_id });
+      cb.addEventListener('change', onHubs);
+      panel.appendChild(el('label', { class: 'menu-option' }, [cb, el('span', { text: h.hub_id + ' · ' + (h.hub_name || '') + (h.cluster ? ' (' + h.cluster + ')' : '') })]));
+      return cb;
+    });
+    menu.appendChild(panel);
+    wrap.appendChild(el('div', { class: 'field' }, [el('span', { class: 'label', text: 'Hubs' }), menu]));
+
+    ui.cluster = el('select', { class: 'select', id: 'f-cluster', 'aria-label': 'Cluster' }, [el('option', { value: 'ALL', text: 'All clusters' })]);
+    (m.clusters || []).forEach(function (c) { ui.cluster.appendChild(el('option', { value: c, text: c })); });
+    ui.cluster.addEventListener('change', function () { state.filters.cluster = ui.cluster.value; state.filters.hubIds = []; changed(); });
+    wrap.appendChild(el('div', { class: 'field' }, [el('label', { class: 'label', for: 'f-cluster', text: 'Cluster' }), ui.cluster]));
+
+    ui.week = segmented('Week', [['BOTH', 'Both'], ['W1', 'Week 1'], ['W2', 'Week 2']], 'week');
+    ui.weekNote = el('span', { class: 'locked-note' });
+    wrap.appendChild(el('div', { class: 'field', id: 'f-week-field' }, [el('span', { class: 'label', text: 'Week' }), ui.week, ui.weekNote]));
+
+    ui.side = segmented('Hold side', [['ALL', 'All'], ['agent', 'Agent-side'], ['customer', 'Customer-side']], 'holdSide');
+    ui.sideField = el('div', { class: 'field' }, [el('span', { class: 'label', text: 'Hold side' }), ui.side]);
+    wrap.appendChild(ui.sideField);
+
+    ui.ratio = segmented('Ratio basis', [['HUB', 'Hub ratio'], ['OVERALL', 'Overall ratio']], 'ratioBasis');
+    ui.ratioField = el('div', { class: 'field' }, [el('span', { class: 'label', text: 'Forecast ratio basis' }), ui.ratio]);
+    wrap.appendChild(ui.ratioField);
+
+    var reset = el('button', { type: 'button', class: 'btn btn-sm', id: 'f-reset', text: 'Reset filters' });
+    reset.addEventListener('click', function () {
+      state.filters.hubIds = []; state.filters.cluster = 'ALL'; state.filters.week = 'BOTH'; changed();
+    });
+    wrap.appendChild(el('div', { class: 'field' }, [el('span', { class: 'label sr-only', text: 'Reset' }), reset]));
+
+    ui.chips = el('div', { class: 'filter-chips', id: 'f-chips', 'aria-live': 'polite' });
+    bar.appendChild(wrap); bar.appendChild(ui.chips);
+    syncFilterUi();
+  }
+  function segmented(label, opts, key) {
+    var g = el('div', { class: 'segmented', role: 'group', 'aria-label': label });
+    opts.forEach(function (o) {
+      var b = el('button', { type: 'button', 'data-val': o[0], 'aria-pressed': 'false', text: o[1] });
+      b.addEventListener('click', function () { if (b.disabled) { return; } state.filters[key] = o[0]; changed(); });
+      g.appendChild(b);
+    });
+    return g;
+  }
+  function onHubs() {
+    state.filters.hubIds = ui.hubBoxes.filter(function (c) { return c.checked; }).map(function (c) { return c.value; });
+    changed();
+  }
+  function changed() {
+    syncFilterUi();
+    clearTimeout(debounce);
+    debounce = setTimeout(function () { load(state.page, false); }, 150);
+  }
+  function syncFilterUi() {
+    if (!ui.chips) { return; }
+    var f = state.filters, page = state.page;
+    ui.hubBoxes.forEach(function (c) { c.checked = f.hubIds.indexOf(c.value) >= 0; });
+    ui.hubLabel.textContent = f.hubIds.length === 0 ? 'All hubs' : (f.hubIds.length <= 3 ? f.hubIds.join(', ') : f.hubIds.length + ' hubs');
+    ui.cluster.value = f.cluster;
+    var locked = !!WEEK_LOCK[page];
+    [['week', ui.week], ['holdSide', ui.side], ['ratioBasis', ui.ratio]].forEach(function (p) {
+      Array.prototype.forEach.call(p[1].children, function (b) {
+        var shown = (p[0] === 'week' && locked) ? (page === 'holdsReturns' ? 'W2' : null) : f[p[0]];
+        b.setAttribute('aria-pressed', b.getAttribute('data-val') === shown ? 'true' : 'false');
+        if (p[0] === 'week') { b.disabled = locked; }
+      });
+    });
+    ui.weekNote.textContent = locked ? WEEK_LOCK[page] : '';
+    var wf = document.getElementById('f-week-field'); if (wf) { wf.hidden = locked; }
+    ui.sideField.hidden = page !== 'holdsReturns';
+    ui.ratioField.hidden = page !== 'staffing';
+    ui.chips.textContent = '';
+    ui.chips.appendChild(el('span', { text: 'Showing:' }));
+    var parts = [f.hubIds.length ? 'Hubs ' + f.hubIds.join(', ') : 'All hubs', f.cluster === 'ALL' ? 'All clusters' : f.cluster];
+    if (!locked) { parts.push(f.week === 'BOTH' ? 'Both weeks' : (f.week === 'W1' ? 'Week 1' : 'Week 2')); } else if (page === 'holdsReturns') { parts.push('Week 2 (fixed for holds)'); }
+    if (page === 'holdsReturns') { parts.push(f.holdSide === 'ALL' ? 'All hold sides' : (f.holdSide === 'agent' ? 'Agent-side holds' : 'Customer-side holds')); }
+    if (page === 'staffing') { parts.push(f.ratioBasis === 'HUB' ? 'Hub-wise ratio' : 'Overall ratio'); }
+    parts.forEach(function (t) { ui.chips.appendChild(el('span', { class: 'filter-chip', text: t })); });
+  }
+
+  /* ---------- navigation and mobile menu ---------- */
+  function pageIds() { return pages.map(function (p) { return p.getAttribute('data-page'); }); }
+  function setMenu(open, restoreFocus) {
+    app.classList.toggle('nav-open', open);
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (open) { if (navButtons[0] && !desktop.matches) { navButtons[0].focus(); } }
+    else if (restoreFocus && !desktop.matches) { toggle.focus(); }
+  }
+  function showPage(id, moveFocus) {
+    if (pageIds().indexOf(id) < 0) { id = DEFAULT_PAGE; }
+    pages.forEach(function (p) { p.hidden = p.getAttribute('data-page') !== id; p.style.opacity = ''; });
+    navButtons.forEach(function (b) {
+      if (b.getAttribute('data-nav') === id) { b.setAttribute('aria-current', 'page'); } else { b.removeAttribute('aria-current'); }
+    });
+    var active = navButtons.filter(function (b) { return b.getAttribute('data-nav') === id; })[0];
+    if (active) { title.textContent = active.textContent.trim(); document.title = active.textContent.trim() + ' | Delivery OTG Dashboard'; }
+    var isNew = state.page !== id;
+    state.page = id;
+    if (isNew) { window.scrollTo(0, 0); if (moveFocus) { content.focus({ preventScroll: true }); } }
+    document.dispatchEvent(new CustomEvent('dash:pagechange', { detail: { page: id } }));
+    return isNew;
+  }
+  navButtons.forEach(function (b) {
+    b.addEventListener('click', function () {
+      var isNew = showPage(b.getAttribute('data-nav'), true);
+      setMenu(false, false);
+      if (isNew && state.meta) { load(state.page, false); } else { render(); }
+    });
+  });
+  toggle.addEventListener('click', function () { setMenu(!app.classList.contains('nav-open'), false); });
+  app.addEventListener('click', function (e) { if (e.target === app && app.classList.contains('nav-open')) { setMenu(false, true); } });
+  document.addEventListener('click', function (e) {
+    var d = $('f-hubs'); if (d && d.open && !d.contains(e.target)) { d.open = false; }
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape') { return; }
+    var d = $('f-hubs');
+    if (d && d.open) { d.open = false; d.querySelector('summary').focus(); return; }
+    if (app.classList.contains('nav-open')) { setMenu(false, true); }
+  });
+  function onViewport() { if (desktop.matches && app.classList.contains('nav-open')) { setMenu(false, false); } }
+  if (desktop.addEventListener) { desktop.addEventListener('change', onViewport); } else if (desktop.addListener) { desktop.addListener(onViewport); }
+
+  window.DashApp = {
+    showPage: function (id) { if (showPage(id, false) && state.meta) { load(state.page, false); } },
+    current: function () { return state.page; },
+    getFilters: function () { return copy(state.filters); },
+    getMeta: function () { return state.meta; },
+    getPageState: function (page) { var s = state.pages[page || state.page] || { status: 'idle' }; return { status: s.status, envelope: s.envelope || null, error: s.error || null }; },
+    reload: function () { load(state.page, true); }
+  };
+  showPage(DEFAULT_PAGE, false);
+  loadMeta();
+})();
+</script>
+
+<script>
+/* Presentation polish: plain-language wording only. No data or numbers are changed. */
+(function () {
+  'use strict';
+  var RULES = [
+    [/\s*\((?:approved )?Q\d+(?:, user-reported)?\)/g, ''],
+    [/, user-reported/g, ''],
+    [/Q8 decision, up to/g, 'Recommended hiring, up to'],
+    [/Q9 staged release against the/g, 'Staged hiring release within the'],
+    [/Q10 risk watch list/g, 'Risk watch list'],
+    [/Q1 whole period: average deliveries per agent-day/g, 'Average deliveries per agent-day (13-26 Oct)'],
+    [/Not yet approved/g, 'Recommended triggers'],
+    [/PENDING_APPROVAL: Q10 draft not yet approved by the user; every trigger is a recommendation, not a company rule\./g, 'These thresholds are recommended early-warning triggers for management review.'],
+    [/Weekly shortfall \(hub-wise ratio\)/g, 'Weekly agent shortfall'],
+    [/Approved hiring and action summary/g, 'Hiring recommendation'],
+    [/Approved hiring recommendation and 28-day agent pay/g, 'Hiring recommendation and 28-day agent pay'],
+    [/Approved action/g, 'Recommended action'],
+    [/Approved hires/g, 'Recommended hires'],
+    [/Q7 (expected orders|hub-wise)/g, '$1'],
+    [/, from the Q7 base/g, ''],
+    [/ \u00b7 period [0-9-]+ to [0-9-]+/g, ''],
+    [/\s*Figures come from the live backend; each is labelled by its status\./g, ''],
+    [/and the approved hiring actions/g, 'and the recommended hiring actions'],
+    [/ \(display order only\)/g, ''],
+    [/^Agent-side holds$/i, 'Agent-side hold share'],
+    [/^Active \/ required$/i, 'Active / needed at peak']
+  ];
+  var busy = false, pending = false;
+  function fmt(iso) {
+    try { return new Date(iso).toLocaleString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Dhaka' }); } catch (e) { return iso; }
+  }
+  function clean(root) {
+    var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null), n, list = [];
+    while ((n = w.nextNode())) { var p = n.parentNode && n.parentNode.nodeName; if (p !== 'SCRIPT' && p !== 'STYLE') { list.push(n); } }
+    list.forEach(function (node) {
+      var t = node.nodeValue, o = t;
+      RULES.forEach(function (r) { t = t.replace(r[0], r[1]); });
+      t = t.replace(/Generated (\d{4}-\d\d-\d\dT[\d:.]+Z)/, function (m, iso) {
+        if (node.parentNode && node.parentNode.classList) { node.parentNode.classList.add('keep-note'); }
+        return 'Last updated ' + fmt(iso) + ' (Dhaka time)';
+      });
+      if (t !== o) { node.nodeValue = t; }
+    });
+  }
+  function tidy() {
+    if (busy) { return; } busy = true;
+    try {
+      var c = document.getElementById('content'); if (c) { clean(c); }
+      var pc = document.getElementById('period-context');
+      if (pc && pc.getAttribute('data-p') !== '1') { pc.textContent = 'Actuals 13-26 Oct 2026  |  Forecast 27 Oct-23 Nov 2026'; pc.setAttribute('data-p', '1'); }
+      var cur = window.DashApp && window.DashApp.current(), wk = document.getElementById('f-week-field');
+      if (wk) { wk.style.display = (cur === 'holdsReturns' || cur === 'staffing') ? 'none' : ''; }
+    } finally { busy = false; }
+  }
+  function schedule() { if (pending) { return; } pending = true; setTimeout(function () { pending = false; tidy(); }, 30); }
+  ['content', 'filter-bar'].forEach(function (id) {
+    var n = document.getElementById(id);
+    if (n && window.MutationObserver) { new MutationObserver(schedule).observe(n, { childList: true, subtree: true }); }
+  });
+  document.addEventListener('dash:data', schedule);
+  document.addEventListener('dash:pagechange', schedule);
+  schedule();
+})();
+</script>

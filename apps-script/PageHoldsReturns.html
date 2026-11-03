@@ -1,0 +1,173 @@
+<section id="page-holdsReturns" data-page="holdsReturns" data-partial="PageHoldsReturns" hidden aria-label="Holds and Returns">
+  <div class="page">
+    <div class="page-head">
+      <div>
+        <h2>Holds and Returns</h2>
+        <p class="page-lede">Why orders are put on hold in Week 2 (20-26 Oct), what happens to held orders, and which experienced agents have high return ratios. The week is fixed to Week 2 for holds; Hub, Cluster and Hold side filters apply.</p>
+      </div>
+      <div class="cluster" aria-label="Status labels">
+        <span class="badge badge-approved">Approved Result</span><span class="badge badge-derived">Derived here</span><span class="badge badge-pending">Pending Approval</span>
+      </div>
+    </div>
+    <div id="hr-body" class="stack" aria-live="polite"></div>
+  </div>
+  <script>
+  (function () {
+    'use strict';
+    var body = document.getElementById('hr-body');
+    function U() { return window.DashUtil; }
+    function e(s) { return U().esc(s); }
+    function isNum(v) { return v !== null && v !== undefined && v !== '' && isFinite(Number(v)); }
+    function badge(kind, text) { return '<span class="badge badge-' + kind + '">' + e(text) + '</span>'; }
+    function card(title, sub, badges, inner, foot, flush) {
+      return '<div class="card' + (flush ? ' card-flush' : '') + '"><div class="card-head"><div><h3 class="card-title">' + title + '</h3>' + (sub ? '<p class="card-sub">' + sub + '</p>' : '') + '</div><div class="cluster">' + badges + '</div></div>' +
+        '<div class="card-body">' + inner + '</div>' + (foot ? '<div class="card-foot">' + foot + '</div>' : '') + '</div>';
+    }
+    function table(label, head, rows) {
+      return '<div class="table-wrap" tabindex="0" role="region" aria-label="' + e(label) + '"><table class="table"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
+    function hubCell(r) { return '<td class="nowrap"><strong>' + e(r.hub_id) + '</strong><span class="cell-sub">' + e(r.hub_name || '') + '</span></td>'; }
+    function sum(rows, k) { var s = 0; for (var i = 0; i < rows.length; i++) { if (!isNum(rows[i][k])) { return null; } s += Number(rows[i][k]); } return rows.length ? s : null; }
+
+    function kpis(totals, agents) {
+      var tot = sum(totals, 'total_holds'), ag = sum(totals, 'agent_side_holds');
+      var share = (tot && ag !== null) ? 100 * ag / tot : null;
+      var flagged = agents.length;
+      function k(label, val, ctx, kind, kt, tone) { return '<div class="kpi' + (tone ? ' tone-' + tone : '') + '"><span class="kpi-label">' + e(label) + '</span><span class="kpi-value">' + val + '</span><span class="kpi-context">' + e(ctx) + '</span>' + badge(kind, kt) + '</div>'; }
+      return '<div class="grid-kpi" style="grid-template-columns:repeat(auto-fit,minmax(11rem,1fr))">' +
+        k('Week 2 holds', U().int(tot), 'All hold events, 20-26 Oct', 'approved', 'Approved basis (Q3)') +
+        k('Agent-side holds', U().int(ag), 'Late Dispatch, Not Attempted, Agent Time Shortage', 'approved', 'Approved basis (Q3)') +
+        k('Agent-side share', U().pct(share), 'Agent-side / all holds, selected hubs', 'derived', 'Derived here') +
+        k('High-return agents', U().int(flagged), 'Tenure over 30 days, return ratio above 15%', 'approved', 'Approved Result (Q5)', flagged ? 'crit' : 'good') + '</div>';
+    }
+
+    /* ---- reasons ---- */
+    function aggregate(rows) {
+      var by = {};
+      rows.forEach(function (r) { var o = by[r.hold_reason] || (by[r.hold_reason] = { reason: r.hold_reason, side: r.side, holds: 0 }); o.holds += Number(r.holds) || 0; });
+      return Object.keys(by).map(function (k) { return by[k]; }).sort(function (a, b) { return b.holds - a.holds || String(a.reason).localeCompare(String(b.reason)); });
+    }
+    function reasonList(items, rankOf, max, total, tone) {
+      if (!items.length) { return '<div class="empty-state"><strong>No holds on this side for the selection</strong></div>'; }
+      return '<ul style="margin:0;padding:0">' + items.map(function (it) {
+        var rk = rankOf[it.reason];
+        var w = max ? 100 * it.holds / max : 0;
+        return '<li style="list-style:none;padding:.5rem .6rem;margin:.25rem 0;border-radius:.4rem;' + (rk ? 'background:var(--warn-bg);border:1px solid var(--warn-bd)' : 'border:1px solid transparent') + '">' +
+          '<div class="cluster" style="justify-content:space-between"><span><strong>' + e(it.reason) + '</strong>' + (rk ? ' <span class="chip chip-warn">Top ' + rk + '</span>' : '') + '</span>' +
+          '<span class="num">' + U().int(it.holds) + ' <span class="text-muted">(' + U().pct(total ? 100 * it.holds / total : null) + ')</span></span></div>' +
+          '<div class="meter ' + tone + '" role="img" aria-label="' + e(it.reason + ': ' + U().int(it.holds) + ' holds') + '" style="margin-top:.35rem"><span style="width:' + w + '%"></span></div></li>';
+      }).join('') + '</ul>';
+    }
+    function reasons(rows, side) {
+      if (!rows.length) { return card('Week 2 hold reasons', '', badge('approved', 'Approved basis (Q3)'), '<div class="empty-state"><strong>No hold data for this selection</strong></div>'); }
+      var all = aggregate(rows), total = sum(all, 'holds') || 0, max = all.length ? all[0].holds : 0;
+      var rank = {}; if (all[0]) { rank[all[0].reason] = 1; } if (all[1]) { rank[all[1].reason] = 2; }
+      var tie = all.length > 2 && all[2].holds === all[1].holds;
+      var ag = all.filter(function (x) { return x.side === 'agent'; }), cu = all.filter(function (x) { return x.side === 'customer'; });
+      var top = all.slice(0, 2).map(function (x, i) { return '<strong>#' + (i + 1) + ' ' + e(x.reason) + '</strong> (' + U().int(x.holds) + ', ' + e(x.side === 'agent' ? 'agent-side' : 'customer-side') + ')'; }).join(' &middot; ');
+      var summary = '<div class="callout callout-warn" style="margin-bottom:.9rem"><strong>Top two hold reasons, selected hubs:</strong> ' + top + (tie ? ' <span class="chip chip-muted">tie at #2, alphabetical rule used</span>' : '') +
+        (side !== 'ALL' ? '<div class="legend-note">Ranked within the ' + (side === 'agent' ? 'agent-side' : 'customer-side') + ' filter only.</div>' : '') + '</div>';
+      var grid = '<div class="grid-2"><div><h4 style="margin-bottom:.4rem">Agent-side <span class="legend-note">(' + U().int(sum(ag, 'holds') || 0) + ')</span></h4>' + reasonList(ag, rank, max, total, 'meter-crit') + '</div>' +
+        '<div><h4 style="margin-bottom:.4rem">Customer-side <span class="legend-note">(' + U().int(sum(cu, 'holds') || 0) + ')</span></h4>' + reasonList(cu, rank, max, total, '') + '</div></div>';
+      return card('Week 2 hold reasons', 'Selected hubs combined, 20-26 Oct. Percentages are shares of the holds shown.', badge('approved', 'Approved basis (Q3)'), summary + grid,
+        'Agent-side reasons: Late Dispatch, Not Attempted, Agent Time Shortage. Every other reason is customer-side. Top two = highest hold counts, ties broken alphabetically (the approved Q3 rule).');
+    }
+    function matrix(rows) {
+      if (!rows.length) { return ''; }
+      var rs = []; rows.forEach(function (r) { if (rs.indexOf(r.hold_reason) < 0) { rs.push(r.hold_reason); } }); rs.sort();
+      var hubs = []; rows.forEach(function (r) { if (hubs.indexOf(r.hub_id) < 0) { hubs.push(r.hub_id); } }); hubs.sort();
+      var tr = hubs.map(function (h) {
+        return '<tr><td class="nowrap"><strong>' + e(h) + '</strong></td>' + rs.map(function (x) {
+          var m = rows.filter(function (r) { return r.hub_id === h && r.hold_reason === x; })[0]; return '<td class="num">' + (m ? U().int(m.holds) : '0') + '</td>'; }).join('') + '</tr>';
+      }).join('');
+      return '<details><summary style="cursor:pointer;font-weight:600">Holds by hub and reason (table)</summary>' + table('Holds by hub and reason', '<th>Hub</th>' + rs.map(function (x) { return '<th class="num">' + e(x) + '</th>'; }).join(''), tr) + '</details>';
+    }
+
+    function hubHolds(totals) {
+      if (!totals.length) { return ''; }
+      var tr = totals.map(function (r) {
+        return '<tr>' + hubCell(r) + '<td class="num">' + U().int(r.total_holds) + '</td><td class="num">' + U().int(r.agent_side_holds) + '</td><td class="num">' + U().pct(r.agent_side_share_pct) + '</td>' +
+          '<td>' + (r.top1_reason ? e(r.top1_reason) + ' <span class="text-muted">(' + U().int(r.top1_holds) + ')</span>' : 'n/a') + '</td><td>' + (r.top2_reason ? e(r.top2_reason) + ' <span class="text-muted">(' + U().int(r.top2_holds) + ')</span>' : 'n/a') +
+          (r.tie_note ? '<span class="cell-sub">' + e(r.tie_note) + '</span>' : '') + '</td></tr>';
+      }).join('');
+      return card('Holds by hub (Week 2)', 'Always covers both sides; the Hold side filter does not change this table.', badge('approved', 'Approved Result (Q3)'),
+        table('Holds by hub', '<th>Hub</th><th class="num">Total holds</th><th class="num">Agent-side holds</th><th class="num">Agent-side share</th><th>Top reason</th><th>Second reason</th>', tr), '', true);
+    }
+
+    /* ---- held-order outcomes: 100% stacked bars ---- */
+    function outcomes(rows) {
+      if (!rows.length) { return ''; }
+      var seg = [['delivered_pct', 'delivered_orders', 'Delivered', '#2f9e5e'], ['returned_pct', 'returned_orders', 'Returned', '#c2410c'], ['still_on_hold_pct', 'still_on_hold_orders', 'Still on hold', '#d99a1c']];
+      var bars = rows.map(function (r) {
+        var parts = seg.map(function (s) { var p = Number(r[s[0]]) || 0; return '<span title="' + e(s[2] + ': ' + U().int(r[s[1]]) + ' orders (' + U().pct(r[s[0]]) + ')') + '" style="width:' + p + '%;background:' + s[3] + ';color:#fff;font-size:.72rem;font-weight:700;display:flex;align-items:center;justify-content:center;min-width:0;overflow:hidden">' + (p >= 9 ? U().dec1(p) + '%' : '') + '</span>'; }).join('');
+        return '<li style="list-style:none;display:grid;grid-template-columns:3rem 1fr;gap:.6rem;align-items:center;margin:.45rem 0"><strong>' + e(r.hub_id) + '</strong>' +
+          '<div role="img" aria-label="' + e(r.hub_id + ': ' + seg.map(function (s) { return s[2] + ' ' + U().pct(r[s[0]]); }).join(', ')) + '" style="display:flex;height:1.6rem;border-radius:.3rem;overflow:hidden;background:var(--neutral-bg)">' + parts + '</div></li>';
+      }).join('');
+      var legend = seg.map(function (s) { return '<span class="cluster" style="gap:.35rem"><span style="width:.8rem;height:.8rem;border-radius:2px;background:' + s[3] + ';display:inline-block"></span>' + s[2] + '</span>'; }).join('');
+      var tr = rows.map(function (r) {
+        return '<tr>' + hubCell(r) + '<td class="num">' + U().int(r.held_orders) + '</td><td class="num">' + U().int(r.delivered_orders) + ' (' + U().pct(r.delivered_pct) + ')</td><td class="num">' + U().int(r.returned_orders) + ' (' + U().pct(r.returned_pct) + ')</td><td class="num">' + U().int(r.still_on_hold_orders) + ' (' + U().pct(r.still_on_hold_pct) + ')</td></tr>';
+      }).join('');
+      var mism = rows.filter(function (r) { return isNum(r.status_mismatch) && Number(r.status_mismatch) > 0; });
+      var chk = mism.length ? '<div class="alert alert-warn" style="margin-top:.6rem"><span class="alert-text">Data check: the last logged event differs from the order status for ' + e(mism.map(function (r) { return r.hub_id + ' (' + U().int(r.status_mismatch) + ')'; }).join(', ')) + '.</span></div>' : '<p class="legend-note" style="margin-top:.5rem"><span class="chip chip-good">Data check passed</span> The last logged event matches the order status for every held order.</p>';
+      return card('What happens to held orders', 'Final status of orders that were on hold at least once, 13-26 Oct, as a share of each hub\'s held orders.', badge('approved', 'Approved Result (Q4)'),
+        '<div data-chart-host="holdsOutcomes" data-chart-page="holdsReturns"><ul style="margin:0;padding:0">' + bars + '</ul></div><div class="cluster" style="gap:.4rem 1rem;font-size:.8rem;margin-top:.4rem">' + legend + '</div>' + chk +
+        '<details style="margin-top:.6rem"><summary style="cursor:pointer;font-weight:600">View as table</summary>' + table('Held-order outcomes', '<th>Hub</th><th class="num">Held orders</th><th class="num">Delivered</th><th class="num">Returned</th><th class="num">Still on hold</th>', tr) + '</details>',
+        'Covers the whole period and ignores the week filter. Each bar sums to 100% of that hub\'s held orders.');
+    }
+
+    /* ---- Q5 ---- */
+    function returns(agents) {
+      var inner;
+      if (!agents.length) {
+        inner = '<div class="empty-state"><strong>No agent above 15% in the current selection</strong><span>Agents need tenure over 30 days (at 26 Oct 2026) and a return ratio above 15%.</span></div>';
+      } else {
+        var tr = agents.map(function (a) {
+          return '<tr class="row-crit"><td class="nowrap"><strong>' + e(a.agent_id) + '</strong><span class="cell-sub">' + e(a.agent_name || '') + '</span></td><td class="nowrap">' + e(a.hub_id) + '</td><td class="num">' + U().int(a.tenure_days) + '</td>' +
+            '<td class="num">' + U().int(a.attempts) + '</td><td class="num">' + U().int(a.returned_attempts) + '</td><td class="num"><strong>' + U().pct(a.return_ratio_attempt_pct) + '</strong></td>' +
+            '<td class="num">' + U().int(a.orders_handled) + '</td><td class="num">' + U().int(a.orders_returned) + '</td><td class="num"><strong>' + U().pct(a.return_ratio_order_pct) + '</strong></td>' +
+            '<td>' + (a.flag_primary === 'YES' ? '<span class="chip chip-crit">Primary</span> ' : '') + (a.flag_comparison === 'YES' ? '<span class="chip chip-crit">Comparison</span>' : '') + '</td></tr>';
+        }).join('');
+        inner = table('High-return agents', '<th>Agent</th><th>Hub</th><th class="num">Tenure (days)</th><th class="num">Attempts</th><th class="num">Returns</th><th class="num">Return ratio (primary, attempt-based)</th><th class="num">Orders handled</th><th class="num">Orders returned</th><th class="num">Return ratio (comparison, order-based)</th><th>Above 15%</th>', tr);
+      }
+      return card('High-return agents', 'Agents with tenure over 30 days and a return ratio above 15%, 13-26 Oct 2026.', badge('approved', 'Approved Result (Q5)'), inner,
+        'Primary ratio = Returned events / Assigned attempts. Comparison ratio = distinct returned orders / distinct orders handled. The assessment text does not fix the denominator, so both are shown; an agent is listed if either exceeds 15%. Ignores the week filter.', true);
+    }
+
+    function pending() {
+      return '<div class="callout callout-pending"><div class="cluster">' + badge('pending', 'Pending Approval') + '<strong>Return and hold triggers (Q10)</strong></div>' +
+        '<p>Any trigger or follow-up action for holds and returns (for example, reviewing an agent above 15% two weeks running) comes from the Q10 risk draft, which is awaiting approval. No action shown on this page is a company rule.</p></div>';
+    }
+    function notes(env) {
+      function list(a) { return (a && a.length) ? '<ul>' + a.map(function (t) { return '<li>' + e(t) + '</li>'; }).join('') + '</ul>' : ''; }
+      return '<div class="card"><div class="card-body"><details><summary style="cursor:pointer;font-weight:600">Notes, definitions and limitations</summary><div class="stack" style="margin-top:.6rem">' +
+        '<div><div class="section-title">Notes for this page</div>' + list(env.data.notes) + '</div><div><div class="section-title">Definitions</div>' + list(env.definitions) + '</div><div><div class="section-title">Limitations</div>' + list(env.limitations) + '</div></div></details>' +
+        '<p class="legend-note" style="margin-top:.5rem">Generated ' + e(env.generatedAt || '') + '</p></div></div>';
+    }
+
+    function render(env) {
+      var d = env && env.data;
+      var hasAny = d && ((d.holdTotals || []).length || (d.heldOutcomes || []).length || (d.returnAgents || []).length || (d.holdsByReason || []).length);
+      if (!hasAny) { body.innerHTML = '<div class="empty-state"><strong>No data for the current filters</strong><span>Reset the filters or choose another hub or cluster.</span></div>'; return; }
+      var side = (env.filtersApplied && env.filtersApplied.holdSide) || 'ALL';
+      body.innerHTML = kpis(d.holdTotals || [], d.returnAgents || []) + reasons(d.holdsByReason || [], side) + '<div class="card"><div class="card-body">' + (matrix(d.holdsByReason || []) || '') + '</div></div>' +
+        hubHolds(d.holdTotals || []) + outcomes(d.heldOutcomes || []) + returns(d.returnAgents || []) + pending() + notes(env);
+    }
+    function onData(detail) {
+      if (detail.page !== 'holdsReturns') { return; }
+      if (detail.status === 'ready' && detail.envelope) { render(detail.envelope); }
+      else if (detail.status === 'error') {
+        var hint = detail.error ? '<span class="cell-sub">Details: ' + e(String(detail.error)) + '</span>' : '';
+        body.innerHTML =
+          '<div class="empty-state">' +
+          '<strong>Unable to load holds and returns data</strong>' +
+          '<span>Please refresh the dashboard or try again.</span>' + hint +
+          '</div>';
+      }
+    }
+    document.addEventListener('dash:data', function (ev) { onData(ev.detail); });
+    document.addEventListener('DOMContentLoaded', function () {
+      if (window.DashApp) { var s = window.DashApp.getPageState('holdsReturns'); onData({ page: 'holdsReturns', status: s.status, envelope: s.envelope }); }
+    });
+  })();
+  </script>
+</section>

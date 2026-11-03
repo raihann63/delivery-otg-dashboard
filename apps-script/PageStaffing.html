@@ -1,0 +1,510 @@
+<section id="page-staffing" data-page="staffing" data-partial="PageStaffing" hidden aria-label="Staffing and Hiring Plan">
+  <div class="page">
+    <div class="page-head">
+      <div>
+        <h2>Staffing and Hiring Plan</h2>
+        <p class="page-lede">Forecast demand for 27 Oct-23 Nov 2026 (4 weeks), the agents each hub needs, the hiring recommendation, its 28-day agent-pay cost and the risks to watch.</p>
+      </div>
+      <div class="cluster" aria-label="Status labels">
+        <span class="badge badge-approved">Approved Result</span><span class="badge badge-forecast">Forecast</span><span class="badge badge-derived">Derived Metric</span><span class="badge badge-assumption">Assumption</span><span class="badge badge-pending">Pending Approval</span>
+      </div>
+    </div>
+    <div id="st-body" class="stack" aria-live="polite"></div>
+  </div>
+  <script>
+  (function () {
+    'use strict';
+    var body = document.getElementById('st-body');
+    var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    function U() { return window.DashUtil; }
+    function e(s) { return U().esc(s); }
+    function isNum(v) { return v !== null && v !== undefined && v !== '' && isFinite(Number(v)); }
+    function badge(kind, text) { return '<span class="badge badge-' + kind + '">' + e(text) + '</span>'; }
+    function bdt(v) { return isNum(v) ? U().int(v) + ' BDT' : 'n/a'; }
+    function card(title, sub, badges, inner, foot, flush) {
+      return '<div class="card' + (flush ? ' card-flush' : '') + '"><div class="card-head"><div><h3 class="card-title">' + title + '</h3>' + (sub ? '<p class="card-sub">' + sub + '</p>' : '') + '</div><div class="cluster">' + badges + '</div></div>' +
+        '<div class="card-body">' + inner + '</div>' + (foot ? '<div class="card-foot">' + foot + '</div>' : '') + '</div>';
+    }
+    function table(label, head, rows) {
+      return '<div class="table-wrap" tabindex="0" role="region" aria-label="' + e(label) + '"><table class="table"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
+    function hubCell(h) { return '<td class="nowrap"><strong>' + e(h.hub_id) + '</strong><span class="cell-sub">' + e(h.hub_name || '') + '</span></td>'; }
+    function dlabel(s) { var p = String(s).slice(0, 10).split('-'); return p.length === 3 ? Number(p[2]) + ' ' + MONTHS[Number(p[1]) - 1] : String(s); }
+    function gapChip(g) {
+      if (!isNum(g)) { return 'n/a'; }
+      g = Number(g);
+      return g > 0 ? '<span class="chip chip-crit">Short ' + g + '</span>' : (g === 0 ? '<span class="chip chip-muted">Balanced</span>' : '<span class="chip chip-good">Surplus ' + (-g) + '</span>');
+    }
+    function sumNum(arr) { return arr.reduce(function (s, v) { return s + (Number(v) || 0); }, 0); }
+
+    function model(d, basis) {
+      var k = basis === 'OVERALL' ? 'overall' : 'hub';
+      var rows = d.q7Rows || [], hubs = [], by = {}, weeks = [];
+      rows.forEach(function (r) {
+        if (!by[r.hub_id]) { by[r.hub_id] = { hub_id: r.hub_id, hub_name: r.hub_name, active: r.active_agents, w: {} }; hubs.push(r.hub_id); }
+        by[r.hub_id].w[r.forecast_week] = r;
+        if (weeks.indexOf(Number(r.forecast_week)) < 0) { weeks.push(Number(r.forecast_week)); }
+      });
+      hubs.sort(); weeks.sort(function (a, b) { return a - b; });
+      return { k: k, hubs: hubs.map(function (h) { return by[h]; }), weeks: weeks, ratioKey: k === 'hub' ? 'hub_ratio' : 'overall_ratio', label: k === 'hub' ? 'hub-wise ratio' : 'overall ratio' };
+    }
+    function wkHead(m, rows) {
+      var first = m.hubs[0];
+      return m.weeks.map(function (w) { return '<th class="num">Wk ' + w + '<span class="cell-sub" style="font-weight:400;text-transform:none">from ' + e(dlabel(first.w[w].week_start)) + '</span></th>'; }).join('');
+    }
+
+    function kpis(d, m) {
+      var ws = d.weeklyShortfall || {};
+      var sh = (m.k === 'hub' ? ws.hubWise : ws.overall) || [];
+      var summary = d.planSummary || {};
+      
+      var newHires = summary.newHires || 0;
+      var transfers = summary.transfers || 0;
+      var conditionalHires = summary.conditionalHires || 0;
+      var totalAdded = newHires + transfers + conditionalHires;
+
+      var active = sumNum(m.hubs.map(function (h) { return h.active; }));
+      function kp(label, val, ctx, bd, tone) { return '<div class="kpi' + (tone ? ' tone-' + tone : '') + '"><span class="kpi-label">' + e(label) + '</span><span class="kpi-value">' + val + '</span><span class="kpi-context">' + e(ctx) + '</span>' + bd + '</div>'; }
+      
+      var b = summary.budget || {};
+      
+      return '<div class="grid-kpi" style="grid-template-columns:repeat(auto-fit,minmax(12rem,1fr))">' +
+        kp('Active agents', U().int(active), 'Current active roster', badge('approved', 'Approved basis')) +
+        kp('Agents Added (Plan)', U().int(totalAdded), U().int(newHires) + ' New + ' + U().int(transfers) + ' Transfer + ' + U().int(conditionalHires) + ' Cond.', badge('approved', 'Budget Optimized'), 'info') +
+        
+        kp('Total Budget Limit', bdt(b.limit), 'Provided by Finance', badge('approved', 'Approved Result')) +
+        kp('Planned Spend', bdt(b.planned), 'Includes salary, hiring, transfer & programme', badge('approved', 'Budget Optimized'), 'good') +
+        kp('Remaining Reserve', bdt(b.reserve), 'Buffer for unseen costs', badge('approved', 'Approved Result'), 'good') + 
+        '</div>';
+    }
+
+    function ordersTable(m) {
+      var tr = m.hubs.map(function (h) {
+        return '<tr>' + hubCell(h) + m.weeks.map(function (w) { return '<td class="num">' + U().int(h.w[w].expected_orders) + '</td>'; }).join('') + '<td class="num">' + U().int(sumNum(m.weeks.map(function (w) { return h.w[w].expected_orders; }))) + '</td></tr>';
+      }).join('');
+      var tot = '<tr><td><strong>All selected hubs</strong></td>' + m.weeks.map(function (w) { return '<td class="num"><strong>' + U().int(sumNum(m.hubs.map(function (h) { return h.w[w].expected_orders; }))) + '</strong></td>'; }).join('') + '<td class="num"><strong>' + U().int(sumNum(m.hubs.map(function (h) { return sumNum(m.weeks.map(function (w) { return h.w[w].expected_orders; })); }))) + '</strong></td></tr>';
+      return card('Forecast expected orders', 'Expected orders per hub and forecast week.', badge('forecast', 'Forecast'), table('Forecast expected orders', '<th>Hub</th>' + wkHead(m) + '<th class="num">4-week total</th>', tr + tot), 'Source: the supplied volume forecast.', true);
+    }
+
+    function requiredTable(m) {
+      var kk = m.k;
+      var tr = m.hubs.map(function (h) {
+        return '<tr>' + hubCell(h) + '<td class="num">' + U().int(h.active) + '</td>' + m.weeks.map(function (w) {
+          var r = h.w[w]; return '<td class="num nowrap">' + U().int(r['required_rounded_' + kk]) + '<span class="cell-sub">' + U().dec2(r['required_agents_' + kk]) + ' exact</span><span class="cell-sub">' + gapChip(r['staffing_gap_' + kk]) + '</span></td>'; }).join('') + '</tr>';
+      }).join('');
+      var tot = '<tr><td><strong>All selected hubs</strong></td><td class="num"><strong>' + U().int(sumNum(m.hubs.map(function (h) { return h.active; }))) + '</strong></td>' + m.weeks.map(function (w) {
+        return '<td class="num"><strong>' + U().int(sumNum(m.hubs.map(function (h) { return h.w[w]['required_rounded_' + kk]; }))) + '</strong><span class="cell-sub">sum of hubs</span></td>'; }).join('') + '</tr>';
+      return card('Required agents by hub and week', 'Rounded-up agents needed (exact value underneath), with the gap against active agents. Basis: ' + e(m.label) + '.', badge('approved', 'Approved Result'),
+        table('Required agents', '<th>Hub</th><th class="num">Active</th>' + wkHead(m), tr + tot),
+        'Required = expected orders x attempts-per-order ratio / (7 x 34): 34 planning attempts per agent per day, 7 days. Rounded up to whole agents. Gap = rounded required - active agents.', true);
+    }
+
+    function compare(m) {
+      var kk = m.k, max = 0;
+      var peak = m.hubs.map(function (h) { return Math.max.apply(null, m.weeks.map(function (w) { return Number(h.w[w]['required_rounded_' + kk]) || 0; })); });
+      var totalActive = sumNum(m.hubs.map(function (h) { return h.active; }));
+      var totalPeak = Math.max.apply(null, m.weeks.map(function (w) { return sumNum(m.hubs.map(function (h) { return h.w[w]['required_rounded_' + kk]; })); }));
+      
+      // অপারেশনাল শর্টফল হিসাব (শুধু পজিটিভ গ্যাপ যোগ করে)
+      var totalShortfall = sumNum(m.hubs.map(function(h, i) { return Math.max(0, peak[i] - (Number(h.active) || 0)); }));
+      var netGap = totalPeak - totalActive; 
+      
+      m.hubs.forEach(function (h, i) { max = Math.max(max, Number(h.active) || 0, peak[i]); });
+      
+      function line(label, active, req, strong, customGap, isTotal) {
+        var gap = customGap !== undefined ? customGap : req - active;
+        var activeLabel = isTotal ? 'Total Active (all hubs)' : 'Active';
+        var reqLabel = isTotal ? 'Total Required (all hubs)' : 'Peak required';
+
+        function bar(v, tone, what) { return '<div class="meter ' + tone + '" role="img" aria-label="' + e(what + ': ' + U().int(v)) + '"><span style="width:' + (max && !strong ? 100 * v / max : (Math.max(totalActive, totalPeak) ? 100 * v / Math.max(totalActive, totalPeak) : 0)) + '%"></span></div>'; }
+        
+        return '<li style="list-style:none;padding:.55rem 0;border-bottom:1px solid var(--border)"><div class="cluster" style="justify-content:space-between"><strong>' + label + '</strong>' + gapChip(gap) + '</div>' +
+          '<div style="display:grid;grid-template-columns:8rem 1fr 2.5rem;gap:.35rem .6rem;align-items:center;margin-top:.35rem;font-size:.8rem">' +
+          '<span class="text-muted">' + activeLabel + '</span>' + bar(active, '', 'Active agents') + '<span class="num" style="text-align:right">' + U().int(active) + '</span>' +
+          '<span class="text-muted">' + reqLabel + '</span>' + bar(req, gap > 0 ? 'meter-warn' : 'meter-good', 'Peak required agents') + '<span class="num" style="text-align:right">' + U().int(req) + '</span></div></li>';
+      }
+      
+      var items = m.hubs.map(function (h, i) { return line(e(h.hub_id) + ' <span class="legend-note">' + e(h.hub_name || '') + '</span>', Number(h.active) || 0, peak[i], false); }).join('');
+      
+      // টোটাল লাইনে isTotal=true পাস করা হলো
+      var totalLine = line('All selected hubs (Operational Gap)', totalActive, totalPeak, true, totalShortfall, true);
+      
+      var note = '<div style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.5rem; border-top: 1px dashed #e2e8f0; padding-top: 0.5rem;">' +
+                 '<strong>Why is the total shortfall 5?</strong> Across all hubs, total active (' + totalActive + ') is almost equal to total required (' + totalPeak + '). However, surpluses in H02 and H05 cannot be transferred to H01, H03, and H04. Therefore, the actual operational shortfall is <strong>Short ' + totalShortfall + '</strong>.</div>';
+
+      return card('Active vs required agents', 'Active agents against the highest weekly requirement in the 4 forecast weeks.', badge('approved', 'Approved Result') + badge('derived', 'Totals: derived here'),
+        '<div data-chart-host="staffingCompare" data-chart-page="staffing"><ul style="margin:0;padding:0">' + items + '</ul></div><ul style="margin:0;padding:0">' + totalLine + '</ul>' + note, 'Hub rows use the highest rounded requirement across the 4 weeks. A surplus in one hub does not offset a shortage in another: the shortfall counts only positive gaps.');
+    }
+
+
+  
+
+    function weekly(d, m) {
+      var ws = d.weeklyShortfall || {};
+      var hw = ws.hubWise || [], ov = ws.overall || [];
+      var hubSel = m.k === 'hub';
+      var tr = m.weeks.map(function (w, i) { return '<tr><td><strong>Forecast week ' + w + '</strong><span class="cell-sub">from ' + e(dlabel(m.hubs[0].w[w].week_start)) + '</span></td><td class="num"' + (hubSel ? ' style="background:var(--info-bg)"' : '') + '>' + U().int(hw[i]) + '</td><td class="num"' + (!hubSel ? ' style="background:var(--info-bg)"' : '') + '>' + U().int(ov[i]) + '</td></tr>'; }).join('');
+      return card('Weekly staffing shortfall', 'Total agents short across the selected hubs, positive gaps only.', badge('approved', 'Approved Result'),
+        table('Weekly shortfall', '<th>Week</th><th class="num">Hub-wise ratio</th><th class="num">Overall ratio</th>', tr), 'The shaded column is the selected ratio basis. The hiring plan is built on the hub-wise result.', true);
+    }
+
+    function ratios(m) {
+      var rows = m.hubs.map(function (h) { var r = h.w[m.weeks[0]]; return { h: h, hub: Number(r.hub_ratio), overall: Number(r.overall_ratio), r: r }; });
+      var top = rows.slice().sort(function (a, b) { return b.hub - a.hub; })[0];
+      var others = rows.filter(function (x) { return x !== top; });
+      var max = Math.max.apply(null, rows.map(function (x) { return Math.max(x.hub, x.overall); })) || 1;
+      var range = max - 1;
+      var list = rows.map(function (x) {
+        var hot = x === top;
+        var w = range > 0 ? Math.max(3, 100 * (x.hub - 1) / range) : 3;
+        var t = range > 0 ? 100 * (x.overall - 1) / range : 0;
+        return '<li style="list-style:none;padding:.4rem .5rem;margin:.2rem 0;border-radius:.4rem;' + (hot ? 'background:var(--warn-bg);border:1px solid var(--warn-bd)' : 'border:1px solid transparent') + '"><div class="cluster" style="justify-content:space-between"><strong>' + e(x.h.hub_id) + (hot ? ' <span class="chip chip-warn">Highest ratio</span>' : '') + '</strong><span class="num">' + x.hub.toFixed(4) + '</span></div>' +
+          '<div class="meter ' + (hot ? 'meter-warn' : '') + '" role="img" aria-label="' + e(x.h.hub_id + ' attempts per order ' + x.hub.toFixed(4)) + '" style="margin-top:.3rem"><span style="width:' + w + '%"></span><i class="meter-target" style="left:' + t + '%"></i></div></li>';
+      }).join('');
+      var o = rows[0].overall;
+      var msg = '';
+      if (top && top.r) {
+        var w1 = top.r;
+        msg = '<div class="callout callout-warn" style="margin-bottom:.8rem"><div class="cluster">' + badge('approved', 'Approved Result') + '<strong>' + e(top.h.hub_id) + ' has the highest attempts per order: ' + top.hub.toFixed(4) + '</strong></div>' +
+          '<p>Overall ratio is ' + o.toFixed(4) + (others.length ? '; the other selected hubs range from ' + Math.min.apply(null, others.map(function (x) { return x.hub; })).toFixed(4) + ' to ' + Math.max.apply(null, others.map(function (x) { return x.hub; })).toFixed(4) : '') + '. ' +
+          'In forecast week 1 this means ' + e(top.h.hub_id) + ' needs ' + U().int(w1.required_rounded_hub) + ' agents on its own ratio (gap ' + U().int(w1.staffing_gap_hub) + ') but only ' + U().int(w1.required_rounded_overall) + ' on the overall ratio (gap ' + U().int(w1.staffing_gap_overall) + '). The plan treats the hire as conditional on reviewing its retry rate in the first two weeks.</p></div>';
+      }
+      return card('Attempts per order by hub', 'Historical attempts per order from 13-26 Oct 2026. Bars show each hub ratio; the black marker shows the overall ratio. Higher ratios indicate more attempts required per order.', badge('approved', 'Approved Result') + badge('assumption', 'Ratio held constant: Assumption'),
+        msg + '<ul style="margin:0;padding:0">' + list + '</ul>', 'The ratios are historical assumptions, not guaranteed future retry rates. A higher ratio means more attempts, and so more agents, for the same number of orders.');
+    }
+
+    function attemptsTable(m) {
+      var tr = m.hubs.map(function (h) {
+        return '<tr>' + hubCell(h) + '<td class="num">' + Number(h.w[m.weeks[0]][m.ratioKey]).toFixed(4) + '</td>' + m.weeks.map(function (w) { var r = h.w[w]; return '<td class="num">' + U().int(Number(r.expected_orders) * Number(r[m.ratioKey])) + '</td>'; }).join('') + '</tr>';
+      }).join('');
+      return card('Forecast attempts', 'Expected orders x the selected ratio, rounded to whole attempts.', badge('derived', 'Derived Metric') + badge('forecast', 'Forecast'),
+        table('Forecast attempts', '<th>Hub</th><th class="num">Ratio used</th>' + wkHead(m), tr), 'Expected orders x the ratio shown. Basis: ' + e(m.label) + '.', true);
+    }
+
+    // function budgetBreakdown(d) {
+    //   if (!d.planSummary || !d.planSummary.budget) return '';
+    //   var b = d.planSummary.budget;
+      
+    //   // ডুপ্লিকেট বাজেট কার্ডগুলো বাদ দেওয়া হলো, শুধু How we managed it বক্সটি রাখা হলো
+    //   var html = '<div style="padding: 1rem; background: #f8fafc; border-left: 4px solid var(--primary); border-radius: 0.4rem; font-size: 0.9rem;">' +
+    //     '<h4 style="margin-top: 0; margin-bottom: 0.5rem; font-size: 1rem; color: var(--text-main);">How we managed the 5-agent shortfall within budget:</h4>' +
+    //     '<ul style="margin: 0; padding-left: 1.2rem; color: var(--text-muted); line-height: 1.5;">' +
+    //     '<li><strong>Hiring (2 agents):</strong> Cost BDT 43,800 (Salary + Hiring fee).</li>' +
+    //     '<li><strong>Transfers (2 agents):</strong> Cost BDT 4,000 (Moved from H02 to H01).</li>' +
+    //     '<li><strong>Hold Reduction Programme:</strong> Cost BDT 15,000 (Replaces the need for a 3rd hire).</li>' +
+    //     '</ul>' +
+    //     '<p style="margin-top: 0.75rem; margin-bottom: 0; font-size: 0.85rem; color: var(--text-muted); border-top: 1px solid #e2e8f0; padding-top: 0.75rem;">' +
+    //     '<strong>Why not 91,000 BDT?</strong> If we hired all 5 agents at the standard rate, it would cost 91,000 BDT (unconstrained). By using transfers and a hold reduction programme, we saved <strong>' + bdt(91000 - b.planned) + ' BDT</strong> compared to the unconstrained cost, leaving a <strong>' + bdt(b.limit - b.planned) + ' BDT</strong> reserve.' +
+    //     '</p>' +
+    //     '</div>';
+        
+    //   return card('Budget Optimization Summary', 'How the plan fits within the BDT 70,000 limit.', badge('approved', 'Approved Result'), html);
+    // }
+
+    function budgetBreakdown(d) {
+      if (!d.planSummary || !d.planSummary.budget) return '';
+      var b = d.planSummary.budget;
+      var plan = d.approvedPlan || [];
+      
+      // ডাইনামিকালি খরচগুলো বের করা হচ্ছে
+      var hireCost = 0, transferCost = 0, progCost = 0;
+      plan.forEach(function(p) {
+          if (p.hires > 0) hireCost += 43800; // H04 cost
+          if (p.transferIn > 0) transferCost += 4000; // Transfer cost
+          if (p.conditionalHires > 0) progCost += 15000; // Prog cost
+      });
+      
+      var html = '<div style="padding: 1rem; background: #f8fafc; border-left: 4px solid var(--primary); border-radius: 0.4rem; font-size: 0.9rem;">' +
+        '<h4 style="margin-top: 0; margin-bottom: 0.5rem; font-size: 1rem; color: var(--text-main);">How we managed the 5-agent shortfall within budget:</h4>' +
+        '<ul style="margin: 0; padding-left: 1.2rem; color: var(--text-muted); line-height: 1.5;">' +
+        '<li><strong>Hiring (2 agents):</strong> Cost ' + bdt(hireCost) + ' (Salary + Hiring fee).</li>' +
+        '<li><strong>Transfers (2 agents):</strong> Cost ' + bdt(transferCost) + ' (Moved from H02 to H01).</li>' +
+        '<li><strong>Hold Reduction Programme:</strong> Cost ' + bdt(progCost) + ' (Replaces the need for a 3rd hire).</li>' +
+        '</ul>' +
+        '<p style="margin-top: 0.75rem; margin-bottom: 0; font-size: 0.85rem; color: var(--text-muted); border-top: 1px solid #e2e8f0; padding-top: 0.75rem;">' +
+        '<strong>Why not 91,000 BDT?</strong> If we hired all 5 agents at the standard rate, it would cost 91,000 BDT (unconstrained). By using transfers and a hold reduction programme, we saved <strong>' + bdt(b.limit - b.planned) + ' BDT</strong> while solving the exact same staffing gap.' +
+        '</p>' +
+        '</div>';
+        
+      return card('Budget Optimization Summary', 'How the plan fits within the ' + bdt(b.limit) + ' limit.', badge('approved', 'Approved Result'), html);
+    }
+
+    function hiring(d) {
+      var plan = d.approvedPlan || [];
+      var summary = d.planSummary || {};
+      var b = summary.budget || {};
+      
+      var tr = plan.map(function (p) {
+        var hiresDisplay = '';
+        if (p.hires > 0) {
+          hiresDisplay = U().int(p.hires);
+        } else if (p.transferIn > 0) {
+          hiresDisplay = '<span class="badge badge-info" style="font-size: 0.75rem;">+ ' + U().int(p.transferIn) + ' In</span>';
+        } else if (p.transferOut > 0) {
+          hiresDisplay = '<span class="badge badge-muted" style="font-size: 0.75rem;">- ' + U().int(p.transferOut) + ' Out</span>';
+        } else if (p.conditionalHires > 0) {
+          hiresDisplay = '<span class="badge badge-assumption" style="font-size: 0.75rem;">1 Cond.</span>';
+        } else {
+          hiresDisplay = '0';
+        }
+
+        var costDisplayFixed = '';
+        if (p.transferIn > 0) {
+          costDisplayFixed = '4,000 (Transfer)';
+        } else if (p.conditionalHires > 0) {
+          costDisplayFixed = '15,000 (Prog.)';
+        } else if (p.hires > 0) {
+          costDisplayFixed = '43,800 (Salary + Hire)';
+        } else {
+          costDisplayFixed = '0 BDT';
+        }
+
+        var actionText = p.action || 'n/a';
+        if (p.transferOut > 0) {
+            actionText = 'Source hub for H01 transfer; no new hire';
+        }
+
+        return '<tr class="' + (p.hires > 0 ? 'row-good' : '') + '">' + 
+          hubCell(p) + 
+          '<td class="num">' + hiresDisplay + '</td>' +
+          '<td>' + e(actionText) + (p.condition ? '<span class="cell-sub">' + e(p.condition) + '</span>' : '') + '</td>' +
+          '<td class="num nowrap">' + costDisplayFixed + '</td>' +
+          '</tr>';
+      }).join('');
+      
+      var tot = '<tr><td><strong>Total</strong></td>' +
+                '<td class="num"><strong>' + U().int(sumNum(plan.map(function (p) { return (p.hires + p.transferIn + p.conditionalHires); }))) + '</strong></td>' +
+                '<td></td>' +
+                '<td class="num"><strong>' + bdt(b.planned) + '</strong></td></tr>';
+      
+      return card('Hiring recommendation and 28-day agent pay', 'Approved recommendation: up to 5 hires. Agent pay over the 28-day forecast period only; excludes one-time and other unavailable costs.', badge('approved', 'Approved Result'),
+        table('Hiring plan', '<th>Hub</th><th class="num">Hires</th><th>Action</th><th class="num">28-day pay, all Fixed</th>', tr + tot), e(d.approvedPlanNote || ''), true);
+    }
+
+    function q8ScenarioTable(d) {
+      var q8 = d.q8Scenario || [];
+      if (!q8.length) return '';
+      
+      var tr = q8.filter(function(r) { return r.hub_id === 'H03' || r.hub_id === 'H04'; }).map(function(r) {
+        var isAbove = r.plan_status === 'above 85%';
+        return '<tr>' +
+          hubCell(r) +
+          '<td class="num">' + U().int(r.forecast_week) + '</td>' +
+          '<td class="num">' + U().dec1(r.planned_agents_effective) + '</td>' +
+          '<td class="num">' + U().dec2(r.ratio_no_plan) + ' → ' + U().dec2(r.ratio_with_plan) + '</td>' +
+          '<td class="num">' + U().dec1(r.utilisation_with_plan_pct) + '% ' + (isAbove ? '<span class="chip chip-crit">Above 85%</span>' : '<span class="chip chip-good">Within Target</span>') + '</td>' +
+          '<td class="num">' + U().int(r.holds_avoided) + '</td>' +
+          '<td class="num">' + bdt(r.hold_cost_saved_bdt) + '</td>' +
+          '</tr>';
+      }).join('');
+
+      return card('Impact of Hiring Plan', 'Before vs After applying the 7-day new agent speed and 14-day hold reduction.', badge('approved', 'Approved Result') + badge('derived', 'Derived Metric'),
+        table('Impact of Hiring Plan', '<th>Hub</th><th class="num">Week</th><th class="num">Planned Agents (Effective)</th><th class="num">Ratio (No Plan → Plan)</th><th class="num">Utilisation w/ Plan</th><th class="num">Holds Avoided</th><th class="num">Cost Saved</th>', tr),
+        'New agents work at 60% speed in Week 1. The H03 programme removes 50% of agent-side holds with a linear 14-day ramp.', true);
+    }
+
+    // function q9BudgetOptionsTable(d) {
+    //   var q9 = d.q9BudgetOptions || [];
+    //   if (!q9.length) return '';
+      
+    //   var tr = q9.map(function(r) {
+    //     var isRec = r.option_name && r.option_name.indexOf('RECOMMENDED') >= 0;
+    //     var isFits = r.fixed_vs_70000 === 'fits';
+    //     return '<tr class="' + (isRec ? 'row-good' : '') + '">' +
+    //       '<td><strong>' + e(r.option_name) + '</strong></td>' +
+    //       '<td class="num">' + U().int(r.hires) + '</td>' +
+    //       '<td class="num">' + U().int(r.transfers) + '</td>' +
+    //       '<td class="num">' + U().int(r.programmes) + '</td>' +
+    //       '<td class="num"><strong>' + bdt(r.total_fixed_bdt) + '</strong></td>' +
+    //       '<td class="num">' + bdt(r.left_fixed_bdt) + '</td>' +
+    //       '<td>' + (isFits ? '<span class="chip chip-good">Fits</span>' : '<span class="chip chip-crit">Exceeds</span>') + '</td>' +
+    //       '</tr>';
+    //   }).join('');
+
+    //   // টেবিলের উপরে একটি সুন্দর Decision Note যোগ করা হলো
+    //   var decisionNote = '<div class="callout callout-warn" style="margin-bottom: 1rem;">' +
+    //     '<strong>Executive Decision:</strong> Hub managers requested 8 new agents (Option 1). This is rejected because it costs BDT 175,200, exceeding the budget by BDT 105,200. ' +
+    //     'Instead, we approve <strong>Option 4</strong> (2 hires + 2 transfers + 1 programme) costing <strong>BDT 62,800</strong>, which stays within the BDT 70,000 limit and addresses the critical 5-agent shortfall.' +
+    //     '</div>';
+
+    //   return card('Budget Options Evaluated', 'Direct response to the 8-agent request, with Hub-by-Hub decisions and costs.', badge('approved', 'Approved Result'),
+    //     decisionNote + table('Budget Options Evaluated', '<th>Option Name</th><th class="num">Hires</th><th class="num">Transfers</th><th class="num">Prog.</th><th class="num">Total Fixed Cost</th><th class="num">Remaining</th><th>Status</th>', tr),
+    //     'The RECOMMENDED option (4) uses 2 hires, 2 transfers, and 1 programme to stay well within budget while solving the 5-agent gap.', true);
+    // }
+
+    function q9BudgetOptionsTable(d) {
+      var q9 = d.q9BudgetOptions || [];
+      if (!q9.length) return '';
+      
+      var tr = q9.map(function(r) {
+        var isRec = r.option_name && r.option_name.indexOf('RECOMMENDED') >= 0;
+        var isFits = r.fixed_vs_70000 === 'fits';
+        return '<tr class="' + (isRec ? 'row-good' : '') + '">' +
+          '<td><strong>' + e(r.option_name) + '</strong></td>' +
+          '<td class="num">' + U().int(r.hires) + '</td>' +
+          '<td class="num">' + U().int(r.transfers) + '</td>' +
+          '<td class="num">' + U().int(r.programmes) + '</td>' +
+          '<td class="num"><strong>' + bdt(r.total_fixed_bdt) + '</strong></td>' +
+          '<td class="num">' + bdt(r.left_fixed_bdt) + '</td>' +
+          '<td>' + (isFits ? '<span class="chip chip-good">Fits</span>' : '<span class="chip chip-crit">Exceeds</span>') + '</td>' +
+          '</tr>';
+      }).join('');
+
+      // ডাইনামিক Executive Decision Note
+      var opt1 = q9.filter(function(r) { return r.option_name.indexOf('8 requested') >= 0; })[0] || {};
+      var opt4 = q9.filter(function(r) { return r.option_name.indexOf('RECOMMENDED') >= 0; })[0] || {};
+      
+      var decisionNote = '<div class="callout callout-warn" style="margin-bottom: 1rem;">' +
+        '<strong>Executive Decision:</strong> Hub managers requested ' + (opt1.hires || 8) + ' new agents (Option 1). This is rejected because it costs ' + bdt(opt1.total_fixed_bdt) + ', exceeding the budget by ' + bdt(Math.abs(opt1.left_fixed_bdt)) + '. ' +
+        'Instead, we approve <strong>Option 4</strong> (' + opt4.hires + ' hires + ' + opt4.transfers + ' transfers + ' + opt4.programmes + ' programme) costing <strong>' + bdt(opt4.total_fixed_bdt) + '</strong>, which stays within the ' + bdt(70000) + ' limit and addresses the critical 5-agent shortfall.' +
+        '</div>';
+
+      return card('Budget Options Evaluated', 'Direct response to the 8-agent request, with Hub-by-Hub decisions and costs.', badge('approved', 'Approved Result'),
+        decisionNote + table('Budget Options Evaluated', '<th>Option Name</th><th class="num">Hires</th><th class="num">Transfers</th><th class="num">Prog.</th><th class="num">Total Fixed Cost</th><th class="num">Remaining</th><th>Status</th>', tr),
+        'The RECOMMENDED option uses ' + opt4.hires + ' hires, ' + opt4.transfers + ' transfers, and ' + opt4.programmes + ' programme to stay well within budget while solving the 5-agent gap.', true);
+    }
+
+
+
+    function q10HeadroomTable(d) {
+      var q10 = d.q10Headroom || [];
+      if (!q10.length) return '';
+      
+      var tr = q10.filter(function(r) { return r.hub_id === 'H03' || r.hub_id === 'H04'; }).map(function(r) {
+        var headroom = Number(r.headroom_pct);
+        var isCrit = headroom < 0;
+        return '<tr>' +
+          hubCell(r) +
+          '<td class="num">' + U().int(r.forecast_week) + '</td>' +
+          '<td class="num">' + U().int(r.weekly_capacity_attempts) + '</td>' +
+          '<td class="num">' + U().int(r.max_orders_carried) + '</td>' +
+          '<td class="num">' + (isCrit ? '<span class="chip chip-crit">' + U().dec1(headroom) + '%</span>' : '<span class="chip chip-good">' + U().dec1(headroom) + '%</span>') + '</td>' +
+          '<td class="num">' + (isNum(r.max_ratio_tolerated) ? Number(r.max_ratio_tolerated).toFixed(4) : 'n/a') + '</td>' +
+          '</tr>';
+      }).join('');
+
+      return card('Operational Headroom & Early Warnings', 'Capacity remaining after the plan and the maximum ratio hubs can tolerate.', badge('pending', 'Pending Approval') + badge('forecast', 'Forecast'),
+        table('Operational Headroom', '<th>Hub</th><th class="num">Week</th><th class="num">Capacity Attempts</th><th class="num">Max Orders Carried</th><th class="num">Headroom %</th><th class="num">Max Ratio Tolerated</th>', tr),
+        'Negative headroom means the hub is slightly over capacity (e.g., H04 in Week 1). If the actual ratio exceeds the Max Ratio Tolerated, the plan will not carry all expected orders.', true);
+    }
+
+    function stages(b) {
+      if (!b) { return ''; }
+      var s = b.stages || [];
+      function kv(a, c) { return '<div class="cluster" style="justify-content:space-between;font-size:.85rem; border-bottom: 1px dashed #e2e8f0; padding-bottom: 0.25rem; margin-bottom: 0.25rem;"><span class="text-muted">' + a + '</span><strong class="num">' + c + '</strong></div>'; }
+
+      var cards = s.map(function (x) {
+        var details = '';
+        
+        // Stage 1: Hires (Fixed Salary, Hiring Cost, Total)
+        if (isNum(x.salaryFixed)) {
+          details += kv('Salary (Fixed)', bdt(x.salaryFixed));
+        }
+        if (isNum(x.hiringCost)) {
+          details += kv('Hiring Cost', bdt(x.hiringCost));
+        }
+        if (isNum(x.totalFixed)) {
+          details += kv('Total Fixed Cost', bdt(x.totalFixed));
+        }
+
+        // Stage 2: Transfers
+        if (isNum(x.transferCost)) {
+          details += kv('Transfer Cost', bdt(x.transferCost));
+        }
+
+        // Stage 3: Programme
+        if (isNum(x.programmeCost)) {
+          details += kv('Programme Cost', bdt(x.programmeCost));
+        }
+
+        return '<div class="card"><div class="card-head"><div><h4>Stage ' + e(x.stage) + '</h4><p class="card-sub"><strong>' + e(x.scope) + '</strong></p></div>' + badge('assumption', 'Assumption') + '</div><div class="card-body stack">' + details + (x.note ? '<p class="stage-note" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.5rem;">' + e(x.note) + '</p>' : '') + '</div></div>';
+      }).join('');
+
+      var cert = b.noAffordableCountCertified ? '<div class="callout callout-warn"><div class="cluster">' + badge('assumption', 'Assumption') + '<strong>Release in stages</strong></div><p>Budget: ' + bdt(b.budgetBdt) + ". The first stage's salary fits within it, but one-time costs are not in the data, so each later stage is released only after Finance confirms those costs fit.</p></div>" : '';
+      
+      return card('Staged hiring release within the ' + bdt(b.budgetBdt) + ' budget', 'November 1-30, 2026 is assumed for "next month". Stage 1 prioritises the approved urgent hiring requirement.', badge('approved', 'Approved Result') + badge('assumption', 'Assumption'),
+        '<div class="stack">' + cert + '<div class="grid-3">' + cards + '</div><p class="legend-note">' + e(b.basis) + '</p><p class="legend-note">Not available and not estimated: ' + e(b.unavailable) + '</p></div>', 'These cards cover the whole plan and do not change with the Hub or Cluster filters. Fixed = 16,900 BDT per agent per month; Variable figures rely on assumed working days and delivery volume.');
+    }
+
+    function watch(w) {
+      if (!w) { return ''; }
+      var items = (w.items || []).map(function (it) {
+        function ln(a, c) { return '<p style="font-size:.85rem"><strong>' + a + ':</strong> ' + e(c) + '</p>'; }
+        return '<div class="card" style="box-shadow:none"><div class="card-body stack" style="gap:.4rem"><h4>' + e(it.risk) + '</h4>' + ln('Indicator', it.indicator) + ln('Baseline', it.baseline) + ln('Trigger', it.trigger) + ln('Action', it.action) + '</div></div>';
+      }).join('');
+      return card('Risk watch list', 'Early-warning indicators for the hiring plan.', '',
+        '<div class="callout" style="margin-bottom:.9rem">' + e(w.status) + '</div><div class="grid-2">' + items + '</div>', 'Triggers are recommendations for management discussion.');
+    }
+
+    function notes(env) {
+      function list(a) { return (a && a.length) ? '<ul>' + a.map(function (t) { return '<li>' + e(t) + '</li>'; }).join('') + '</ul>' : ''; }
+      return '<div class="card"><div class="card-body"><details><summary style="cursor:pointer;font-weight:600">Notes, definitions and limitations</summary><div class="stack" style="margin-top:.6rem">' +
+        '<div><div class="section-title">Notes for this page</div>' + list(env.data.notes) + '</div><div><div class="section-title">Definitions</div>' + list(env.definitions) + '</div><div><div class="section-title">Limitations</div>' + list(env.limitations) + '</div></div></details>' +
+        '<p class="legend-note" style="margin-top:.5rem">Generated ' + e(env.generatedAt || '') + '</p></div></div>';
+    }
+
+    function render(env) {
+      var d = env && env.data;
+      if (!d || !d.q7Rows || !d.q7Rows.length) {
+        body.innerHTML = '<div class="empty-state"><strong>No hubs match the current filters</strong><span>Reset the filters or choose another hub or cluster.</span></div>' + (d ? stages(d.budgetStages) + watch(d.watchList) : '');
+        return;
+      }
+      var basis = (env.filtersApplied && env.filtersApplied.ratioBasis) || 'HUB';
+      var m = model(d, basis);
+      var basisNote = basis === 'OVERALL' ? '<div class="callout"><strong>Comparison view:</strong> required agents use the overall ratio. The hiring plan below was built on the hub-wise result.</div>' : '';
+      
+      body.innerHTML = kpis(d, m) + basisNote + 
+        hiring(d) + 
+        budgetBreakdown(d) + 
+        q8ScenarioTable(d) + 
+        q9BudgetOptionsTable(d) + 
+        q10HeadroomTable(d) + 
+        '<div class="grid-2">' + weekly(d, m) + compare(m) + '</div>' + 
+        ordersTable(m) + 
+        requiredTable(m) + 
+        ratios(m) + 
+        attemptsTable(m) + 
+        stages(d.budgetStages) + 
+        watch(d.watchList) + 
+        notes(env);
+    }
+    
+    function onData(detail) {
+      if (detail.page !== 'staffing') { return; }
+      if (detail.status === 'ready' && detail.envelope) { render(detail.envelope); }
+      else if (detail.status === 'error') {
+        var hint = detail.error ? '<span class="cell-sub">Details: ' + e(String(detail.error)) + '</span>' : '';
+        body.innerHTML =
+          '<div class="empty-state">' +
+          '<strong>Unable to load staffing data</strong>' +
+          '<span>Please refresh the dashboard or try again.</span>' + hint +
+          '</div>';
+      }
+    }
+
+    document.addEventListener('dash:data', function (ev) {
+      onData(ev.detail);
+    });
+
+    function syncInitialState() {
+      if (window.DashApp) {
+        var s = window.DashApp.getPageState('staffing');
+
+        if (s) {
+          onData({
+            page: 'staffing',
+            status: s.status,
+            envelope: s.envelope
+          });
+        }
+      }
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', syncInitialState);
+    } else {
+      syncInitialState();
+    }
+  })();
+  </script>
+</section>

@@ -1,0 +1,255 @@
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.js" integrity="sha384-dug+JxfBvklEQdJ4AYuBBAIScUz0bVN73xpy273gcAwHjb3qI0fXmuYNaNfdyYJG" crossorigin="anonymous" onerror="window.__chartjsFailed = true"></script>
+<script data-partial="Charts">
+/* Step 8: Chart.js 4.4.1 (pinned CDN build above) lifecycle module.
+   Contract: a page wraps its existing static visual in
+     <div data-chart-host="KEY" data-chart-page="PAGE" [data-metric="..."]> ...static fallback... </div>
+   This module replaces the fallback with a canvas chart when Chart.js is available and the data allows it.
+   If Chart.js did not load, or a chart cannot be built, the static fallback stays visible. Data is read from
+   DashApp.getPageState(PAGE).envelope (the Step 3 state layer); nothing is fetched or calculated here beyond
+   plotting values the backend already returned (peak = highest weekly rounded requirement, same rule as the page). */
+(function () {
+  'use strict';
+  var HUB_COLORS = ['#1d4ed8', '#c2410c', '#0e7490', '#7c3aed', '#b45309', '#475569'];
+  var HUB_DASH = [[], [6, 3], [2, 3], [10, 3, 2, 3], [], [6, 3]];
+  var TARGET = 85;
+  var live = new Map();          // host element -> { chart, box, key }
+  var scheduled = false;
+  var observed = false;
+
+  function chartJs() { return (typeof window.Chart === 'function') ? window.Chart : null; }
+  function isNum(v) { return v !== null && v !== undefined && v !== '' && isFinite(Number(v)); }
+  function num(v) { return isNum(v) ? Number(v) : null; }
+  function css(name, fallback) {
+    try { var v = getComputedStyle(document.documentElement).getPropertyValue(name).trim(); return v || fallback; } catch (err) { return fallback; }
+  }
+  function pal() {
+    return {
+      w1: css('--chart-w1', '#8fb3f0'), w2: css('--chart-w2', '#1d4ed8'), active: css('--chart-active', '#1d4ed8'),
+      required: css('--chart-required', '#b45309'), target: css('--chart-target', '#b91c1c'), grid: css('--chart-grid', '#e6ebf2'),
+      text: css('--muted', '#475569'), good: '#2f9e5e', crit: '#c2410c', warn: '#d99a1c'
+    };
+  }
+  function U() { return window.DashUtil || { int: function (v) { return String(v); }, pct: function (v) { return v + '%'; }, dec1: function (v) { return Number(v).toFixed(1); } }; }
+  function dayLabel(s) { var p = String(s).slice(0, 10).split('-'); return p.length === 3 ? Number(p[2]) + ' Oct' : String(s); }
+  function envelopeOf(page) { return (window.DashApp && window.DashApp.getPageState(page).envelope) || null; }
+
+  function baseOptions(P, extra) {
+    var o = {
+      responsive: true, maintainAspectRatio: false, animation: { duration: 250 },
+      interaction: { mode: 'index', intersect: false },
+      plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, boxHeight: 12, color: P.text, usePointStyle: false } }, tooltip: { enabled: true } },
+      scales: {}
+    };
+    Object.keys(extra || {}).forEach(function (k) { o[k] = extra[k]; });
+    return o;
+  }
+
+  /* ---------- builders: (envelope, host, palette) -> { config, label } or null ---------- */
+  var BUILDERS = {
+    overviewUtil: function (env, host, P) {
+      var rows = (env.data && env.data.scorecard) || [];
+      if (!rows.length) { return null; }
+      var labels = rows.map(function (r) { return r.hub_id; });
+      var w1 = rows.map(function (r) { return num(r.week1_utilisation_pct); }), w2 = rows.map(function (r) { return num(r.week2_utilisation_pct); });
+      var max = Math.max(100, Math.ceil(Math.max.apply(null, w1.concat(w2).filter(function (v) { return v !== null; }).concat([0])) / 10) * 10);
+      return {
+        label: 'Bar chart of utilisation by hub for Week 1 and Week 2 against the ' + TARGET + '% target.',
+        config: {
+          type: 'bar',
+          data: { labels: labels, datasets: [
+            { label: 'Week 1', data: w1, backgroundColor: P.w1, order: 2 },
+            { label: 'Week 2', data: w2, backgroundColor: P.w2, order: 2 },
+            { type: 'line', label: TARGET + '% target', data: labels.map(function () { return TARGET; }), borderColor: P.target, borderDash: [6, 4], borderWidth: 2, pointRadius: 0, pointHitRadius: 0, order: 1 }
+          ] },
+          options: baseOptions(P, {
+            scales: { y: { beginAtZero: true, max: max, grid: { color: P.grid }, ticks: { callback: function (v) { return v + '%'; }, color: P.text }, title: { display: true, text: 'Utilisation', color: P.text } }, x: { grid: { display: false }, ticks: { color: P.text } } },
+            plugins: { legend: { position: 'bottom' }, tooltip: { callbacks: { label: function (c) { return c.dataset.label + ': ' + (c.parsed.y === null ? 'n/a' : U().dec1(c.parsed.y) + '%'); } } } }
+          })
+        }
+      };
+    },
+    overviewStaffing: function (env, host, P) {
+      var rows = (env.data && env.data.scorecard) || [];
+      if (!rows.length) { return null; }
+      return {
+        label: 'Bar chart of active agents against peak required agents by hub.',
+        config: {
+          type: 'bar',
+          data: { labels: rows.map(function (r) { return r.hub_id; }), datasets: [
+            { label: 'Active agents', data: rows.map(function (r) { return num(r.active_agents); }), backgroundColor: P.active },
+            { label: 'Peak required (forecast)', data: rows.map(function (r) { return num(r.peak_required_hub); }), backgroundColor: P.required }
+          ] },
+          options: baseOptions(P, {
+            scales: { y: { beginAtZero: true, grid: { color: P.grid }, ticks: { precision: 0, color: P.text }, title: { display: true, text: 'Agents', color: P.text } }, x: { grid: { display: false }, ticks: { color: P.text } } },
+            plugins: { legend: { position: 'bottom' }, tooltip: { callbacks: { afterBody: function (items) { var r = rows[items[0].dataIndex]; return isNum(r.shortfall_hub) ? 'Peak shortfall: ' + U().int(r.shortfall_hub) : ''; } } } }
+          })
+        }
+      };
+    },
+    hubTrend: function (env, host, P) {
+      var daily = (env.data && env.data.daily) || [], metric = host.getAttribute('data-metric') === 'delivered' ? 'delivered' : 'assigned';
+      if (!daily.length) { return null; }
+      var dates = [], hubs = [];
+      daily.forEach(function (r) { var d = String(r.event_date).slice(0, 10); if (dates.indexOf(d) < 0) { dates.push(d); } if (hubs.indexOf(r.hub_id) < 0) { hubs.push(r.hub_id); } });
+      dates.sort(); hubs.sort();
+      var split = dates.indexOf('2026-10-20');
+      return {
+        label: 'Line chart of daily ' + (metric === 'assigned' ? 'attempts' : 'deliveries') + ' per hub.',
+        config: {
+          type: 'line',
+          data: { labels: dates.map(dayLabel), datasets: hubs.map(function (h, i) {
+            return { label: h, borderColor: HUB_COLORS[i % 6], backgroundColor: HUB_COLORS[i % 6], borderDash: HUB_DASH[i % 6], borderWidth: 2, pointRadius: 3, tension: 0, spanGaps: false,
+              data: dates.map(function (d) { var r = daily.filter(function (z) { return z.hub_id === h && String(z.event_date).slice(0, 10) === d; })[0]; return r ? num(r[metric]) : null; }) };
+          }) },
+          options: baseOptions(P, {
+            scales: { y: { beginAtZero: true, grid: { color: P.grid }, ticks: { precision: 0, color: P.text }, title: { display: true, text: metric === 'assigned' ? 'Attempts per day' : 'Deliveries per day', color: P.text } }, x: { grid: { display: false }, ticks: { color: P.text, maxRotation: 0, autoSkip: true } } },
+            plugins: { legend: { display: false } }
+          }),
+          plugins: [{ id: 'weekDivider', afterDatasetsDraw: function (chart) {
+            if (split < 1) { return; }
+            var xs = chart.scales.x, ys = chart.scales.y, ctx = chart.ctx, x = (xs.getPixelForValue(split - 1) + xs.getPixelForValue(split)) / 2;
+            ctx.save(); ctx.strokeStyle = P.text; ctx.globalAlpha = 0.5; ctx.setLineDash([4, 3]); ctx.beginPath(); ctx.moveTo(x, ys.top); ctx.lineTo(x, ys.bottom); ctx.stroke();
+            ctx.setLineDash([]); ctx.globalAlpha = 0.9; ctx.fillStyle = P.text; ctx.font = '11px sans-serif'; ctx.textAlign = 'right'; ctx.fillText('Week 1', x - 6, ys.top + 11); ctx.textAlign = 'left'; ctx.fillText('Week 2', x + 6, ys.top + 11); ctx.restore();
+          } }]
+        }
+      };
+    },
+    holdsOutcomes: function (env, host, P) {
+      var rows = (env.data && env.data.heldOutcomes) || [];
+      if (!rows.length) { return null; }
+      function ds(label, pctKey, cntKey, color) { return { label: label, backgroundColor: color, data: rows.map(function (r) { return num(r[pctKey]); }), counts: rows.map(function (r) { return num(r[cntKey]); }) }; }
+      return {
+        label: '100% stacked bar chart of held-order outcomes (delivered, returned, still on hold) by hub.',
+        tall: false,
+        config: {
+          type: 'bar',
+          data: { labels: rows.map(function (r) { return r.hub_id; }), datasets: [ds('Delivered', 'delivered_pct', 'delivered_orders', P.good), ds('Returned', 'returned_pct', 'returned_orders', P.crit), ds('Still on hold', 'still_on_hold_pct', 'still_on_hold_orders', P.warn)] },
+          options: baseOptions(P, {
+            indexAxis: 'y', interaction: { mode: 'nearest', intersect: true },
+            scales: { x: { stacked: true, min: 0, max: 100, grid: { color: P.grid }, ticks: { callback: function (v) { return v + '%'; }, color: P.text }, title: { display: true, text: 'Share of held orders', color: P.text } }, y: { stacked: true, grid: { display: false }, ticks: { color: P.text } } },
+            plugins: { legend: { display: false }, tooltip: { callbacks: { label: function (c) { var n = c.dataset.counts[c.dataIndex]; return c.dataset.label + ': ' + (n === null ? 'n/a' : U().int(n) + ' orders') + ' (' + (c.parsed.x === null ? 'n/a' : U().dec1(c.parsed.x) + '%') + ')'; } } } }
+          })
+        }
+      };
+    },
+    staffingCompare: function (env, host, P) {
+      var rows = (env.data && env.data.q7Rows) || [];
+      if (!rows.length) { return null; }
+      var k = ((env.filtersApplied && env.filtersApplied.ratioBasis) === 'OVERALL') ? 'overall' : 'hub';
+      var hubs = [], by = {};
+      rows.forEach(function (r) { if (!by[r.hub_id]) { by[r.hub_id] = { active: num(r.active_agents), peak: null }; hubs.push(r.hub_id); } var v = num(r['required_rounded_' + k]); if (v !== null && (by[r.hub_id].peak === null || v > by[r.hub_id].peak)) { by[r.hub_id].peak = v; } });
+      hubs.sort();
+      return {
+        label: 'Bar chart of active agents against the peak weekly required agents by hub (' + (k === 'hub' ? 'hub-wise' : 'overall') + ' ratio).',
+        config: {
+          type: 'bar',
+          data: { labels: hubs, datasets: [
+            { label: 'Active agents', data: hubs.map(function (h) { return by[h].active; }), backgroundColor: P.active },
+            { label: 'Peak required (forecast)', data: hubs.map(function (h) { return by[h].peak; }), backgroundColor: P.required }
+          ] },
+          options: baseOptions(P, {
+            scales: { y: { beginAtZero: true, grid: { color: P.grid }, ticks: { precision: 0, color: P.text }, title: { display: true, text: 'Agents', color: P.text } }, x: { grid: { display: false }, ticks: { color: P.text } } },
+            plugins: { legend: { position: 'bottom' }, tooltip: { callbacks: { afterBody: function (items) { var h = hubs[items[0].dataIndex], g = (by[h].peak === null || by[h].active === null) ? null : by[h].peak - by[h].active; return g === null ? '' : (g > 0 ? 'Short by ' + g : (g === 0 ? 'Balanced' : 'Surplus of ' + (-g))); } } } }
+          })
+        }
+      };
+    }
+  };
+
+  /* ---------- lifecycle ---------- */
+  function unwrap(host, entry) {
+    if (entry.box && entry.box.parentNode) { entry.box.parentNode.removeChild(entry.box); }
+    if (host.isConnected) { Array.prototype.forEach.call(host.children, function (c) { if (c.hasAttribute('data-chart-fallback')) { c.hidden = false; c.removeAttribute('data-chart-fallback'); } }); }
+  }
+  function destroy(host) {
+    var entry = live.get(host);
+    if (!entry) { return; }
+    try { entry.chart.destroy(); } catch (err) { /* already gone */ }
+    live.delete(host);
+    unwrap(host, entry);
+  }
+  function destroyAll() { Array.from(live.keys()).forEach(destroy); }
+  function sweep() { Array.from(live.keys()).forEach(function (h) { if (!h.isConnected) { destroy(h); } }); }
+
+  function note(host, text) {
+    var n = host.nextElementSibling;
+    if (n && n.getAttribute && n.getAttribute('data-chart-note') === host.getAttribute('data-chart-host')) { return; }
+    var p = document.createElement('p'); p.className = 'legend-note'; p.setAttribute('data-chart-note', host.getAttribute('data-chart-host')); p.textContent = text;
+    if (host.parentNode) { host.parentNode.insertBefore(p, host.nextSibling); }
+  }
+
+  function mount(host) {
+    var Chart = chartJs(), key = host.getAttribute('data-chart-host'), page = host.getAttribute('data-chart-page');
+    if (!Chart) { note(host, 'Interactive chart unavailable (Chart.js did not load); showing the static view.'); return false; }
+    var build = BUILDERS[key];
+    if (!build) { return false; }
+    var env = envelopeOf(page);
+    if (!env) { return false; }
+    var spec;
+    try { spec = build(env, host, pal()); } catch (err) { note(host, 'Chart could not be drawn; showing the static view.'); return false; }
+    var existing = live.get(host);
+    if (!spec) { if (existing) { destroy(host); } return false; }
+    if (existing) { destroy(host); }          // refreshed data on the same host: rebuild so no stale dataset, option or plugin state survives
+    var box = document.createElement('div'), canvas = document.createElement('canvas');
+    box.className = 'chart-box' + (key === 'holdsOutcomes' ? ' chart-short' : '');
+    if (key === 'holdsOutcomes') { box.style.height = Math.max(12, 3 + 2.4 * ((env.data.heldOutcomes || []).length)) + 'rem'; }
+    canvas.setAttribute('role', 'img'); canvas.setAttribute('aria-label', spec.label);
+    box.appendChild(canvas);
+    var chart;
+    if (key === 'holdsOutcomes') {
+      spec.config.plugins = [{ id: 'barLabels', afterDatasetsDraw: function (c) {
+        var ctx = c.ctx; ctx.save(); ctx.fillStyle = '#fff'; ctx.font = '600 11px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        c.data.datasets.forEach(function (d, i) { c.getDatasetMeta(i).data.forEach(function (b, j) { var v = d.data[j]; if (v !== null && v >= 8) { ctx.fillText(U().dec1(v) + '%', (b.x + b.base) / 2, b.y); } }); });
+        ctx.restore(); } }];
+    }
+    try { chart = new Chart(canvas, spec.config); } catch (err2) { note(host, 'Chart could not be drawn; showing the static view.'); return false; }
+    Array.prototype.forEach.call(host.children, function (c) { c.setAttribute('data-chart-fallback', '1'); c.hidden = true; });
+    host.appendChild(box);
+    live.set(host, { chart: chart, canvas: canvas, box: box, key: key });
+    return true;
+  }
+
+  function scan() {
+    scheduled = false;
+    sweep();
+    Array.prototype.forEach.call(document.querySelectorAll('[data-chart-host]'), function (h) {
+      mount(h);
+    });
+  }
+  function schedule() {
+    if (scheduled) { return; }
+    scheduled = true;
+    (window.requestAnimationFrame || function (f) { return setTimeout(f, 16); })(scan);
+  }
+  function resizeVisible() {
+    live.forEach(function (entry, host) { if (host.isConnected && host.offsetParent !== null) { try { entry.chart.resize(); } catch (err) { /* ignore */ } } });
+  }
+  function observe() {
+    if (observed || !window.MutationObserver) { return; }
+    observed = true;
+    var mo = new MutationObserver(schedule);
+    ['ov-body', 'hp-body', 'hr-body', 'st-body'].forEach(function (id) { var n = document.getElementById(id); if (n) { mo.observe(n, { childList: true }); } });
+  }
+
+  document.addEventListener('dash:data', schedule);
+  document.addEventListener('dash:pagechange', function () { schedule(); setTimeout(resizeVisible, 60); });
+  window.addEventListener('pagehide', destroyAll);
+  window.addEventListener('beforeunload', destroyAll);
+  document.addEventListener('DOMContentLoaded', function () {
+    var C = chartJs();
+    if (C) { C.defaults.font.family = 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif'; C.defaults.font.size = 12; C.defaults.color = pal().text; }
+    observe(); schedule();
+  });
+
+  window.DashCharts = {
+    version: function () { var C = chartJs(); return C ? C.version : null; },
+    available: function () { return !!chartJs(); },
+    count: function () { sweep(); return live.size; },
+    keys: function () { return Object.keys(BUILDERS); },
+    mountAll: scan,
+    update: function (host) { return mount(host); },   // rebuilds this host's chart from the current state data
+    destroy: destroy,
+    destroyAll: destroyAll
+  };
+})();
+</script>

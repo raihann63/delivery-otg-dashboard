@@ -1,0 +1,188 @@
+<section id="page-hubPerformance" data-page="hubPerformance" data-partial="PageHubPerformance" hidden aria-label="Hub Performance">
+  <div class="page">
+    <div class="page-head">
+      <div>
+        <h2>Hub Performance</h2>
+        <p class="page-lede">How each hub performed in Week 1 and Week 2: attempts, utilisation against the 85% target, deliveries and agent-pay cost. Costs cover agent pay only. Follows the Hub, Cluster and Week filters.</p>
+      </div>
+      <div class="cluster" aria-label="Status labels">
+        <span class="badge badge-approved">Approved Result</span><span class="badge badge-additional">Additional Metric</span><span class="badge badge-derived">Derived here</span>
+      </div>
+    </div>
+    <div id="hp-body" class="stack" aria-live="polite"></div>
+  </div>
+  <script>
+  (function () {
+    'use strict';
+    var TARGET = 85;
+    var COLORS = ['#1d4ed8', '#c2410c', '#0e7490', '#7c3aed', '#b45309', '#475569'];
+    var DASH = ['', '6 3', '2 3', '10 3 2 3', '', '6 3'];
+    var body = document.getElementById('hp-body');
+    var metric = 'assigned';
+    var last = null;
+    function U() { return window.DashUtil; }
+    function e(s) { return U().esc(s); }
+    function isNum(v) { return v !== null && v !== undefined && v !== '' && isFinite(Number(v)); }
+    function badge(kind, text) { return '<span class="badge badge-' + kind + '">' + e(text) + '</span>'; }
+    function bdt(v) { return isNum(v) ? U().int(v) + ' BDT' : 'n/a'; }
+    function bdt2(v) { return isNum(v) ? U().dec2(v) + ' BDT' : 'n/a'; }
+    function wkName(w) { return w === 'W1' ? 'Week 1' : 'Week 2'; }
+    function share(r) { return isNum(r.delivered) && isNum(r.attempts) && Number(r.attempts) ? 100 * Number(r.delivered) / Number(r.attempts) : null; }
+    function sumOrNull(rows, key) {
+      var s = 0;
+      for (var i = 0; i < rows.length; i++) { if (!isNum(rows[i][key])) { return null; } s += Number(rows[i][key]); }
+      return rows.length ? s : null;
+    }
+    function status(r) {
+      var above = r.target_status ? r.target_status === 'ABOVE TARGET' : (isNum(r.utilisation_pct) && Number(r.utilisation_pct) > TARGET);
+      if (!isNum(r.utilisation_pct)) { return 'n/a'; }
+      return '<span class="chip ' + (above ? 'chip-crit' : 'chip-good') + '">' + (above ? 'Above ' + TARGET + '%' : 'Within ' + TARGET + '%') + '</span>';
+    }
+    function card(title, sub, badges, inner, foot) {
+      return '<div class="card card-flush"><div class="card-head"><div><h3 class="card-title">' + title + '</h3>' + (sub ? '<p class="card-sub">' + sub + '</p>' : '') + '</div><div class="cluster">' + badges + '</div></div>' +
+        '<div class="card-body">' + inner + '</div>' + (foot ? '<div class="card-foot">' + foot + '</div>' : '') + '</div>';
+    }
+    function table(label, head, rows) {
+      return '<div class="table-wrap" tabindex="0" role="region" aria-label="' + e(label) + '"><table class="table"><thead><tr>' + head + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+    }
+    function hubCell(r) { return '<td class="nowrap"><strong>' + e(r.hub_id) + '</strong><span class="cell-sub">' + e(r.hub_name) + '</span></td>'; }
+
+    function kpis(rows) {
+      var att = sumOrNull(rows, 'attempts'), del = sumOrNull(rows, 'delivered'), pay = sumOrNull(rows, 'agent_pay_activity_bdt');
+      var sh = (att && del !== null) ? 100 * del / att : null;
+      function k(label, val, ctx, kind, kt) { return '<div class="kpi"><span class="kpi-label">' + e(label) + '</span><span class="kpi-value">' + val + '</span><span class="kpi-context">' + e(ctx) + '</span>' + badge(kind, kt) + '</div>'; }
+      return '<div class="grid-kpi" style="grid-template-columns:repeat(auto-fit,minmax(11rem,1fr))">' +
+        k('Delivery attempts', U().int(att), 'Every attempt made, incl. retries', 'approved', 'Approved basis') +
+        k('Delivered', U().int(del), 'Orders delivered', 'additional', 'Additional Metric') +
+        k('Attempt success rate', U().pct(sh), 'Delivered / all attempts', 'additional', 'Additional Metric') +
+        k('Agent pay', bdt(pay), 'Agent pay only, selected period', 'approved', 'Approved basis') + '</div>';
+    }
+
+    function comparison(rows) {
+      var hubs = {}; var order = [];
+      rows.forEach(function (r) { if (!hubs[r.hub_id]) { hubs[r.hub_id] = { hub_id: r.hub_id, hub_name: r.hub_name }; order.push(r.hub_id); } hubs[r.hub_id][r.week] = r; });
+      var both = order.filter(function (id) { return hubs[id].W1 && hubs[id].W2; });
+      if (!both.length) {
+        return card('Week 1 vs Week 2 by hub', '', badge('derived', 'Derived here'), '<div class="empty-state"><strong>Choose "Both" weeks to compare</strong><span>The week filter currently shows a single week.</span></div>');
+      }
+      function d(a, b, fmt, unit) { if (!isNum(a) || !isNum(b)) { return 'n/a'; } var x = Number(b) - Number(a); return (x > 0 ? '+' : '') + fmt(x) + (unit || ''); }
+      var tr = both.map(function (id) {
+        var h = hubs[id], a = h.W1, b = h.W2, sa = share(a), sb = share(b);
+        var pp = (isNum(a.utilisation_pct) && isNum(b.utilisation_pct)) ? Number(b.utilisation_pct) - Number(a.utilisation_pct) : null;
+        return '<tr>' + hubCell(h) +
+          '<td class="num nowrap">' + U().int(a.attempts) + ' &rarr; ' + U().int(b.attempts) + '<span class="cell-sub">' + e(d(a.attempts, b.attempts, U().int)) + '</span></td>' +
+          '<td class="num nowrap">' + U().pct(a.utilisation_pct) + ' &rarr; ' + U().pct(b.utilisation_pct) + '<span class="cell-sub">' + e(pp === null ? 'n/a' : (pp > 0 ? '+' : '') + U().dec1(pp) + ' pp') + '</span></td>' +
+          '<td>' + status(b) + '</td>' +
+          '<td class="num nowrap">' + U().pct(sa) + ' &rarr; ' + U().pct(sb) + '<span class="cell-sub">' + e(sa === null || sb === null ? 'n/a' : (sb - sa > 0 ? '+' : '') + U().dec1(sb - sa) + ' pp') + '</span></td>' +
+          '<td class="num nowrap">' + bdt2(a.cost_per_delivered_order_activity_primary) + ' &rarr; ' + bdt2(b.cost_per_delivered_order_activity_primary) + '<span class="cell-sub">' + e(d(a.cost_per_delivered_order_activity_primary, b.cost_per_delivered_order_activity_primary, U().dec2, ' BDT')) + '</span></td></tr>';
+      }).join('');
+      return card('Week 1 vs Week 2 by hub', 'Each cell reads Week 1 &rarr; Week 2, with the change underneath.', badge('approved', 'Utilisation, cost: Approved Result') + badge('additional', 'Delivered share: Additional') + badge('derived', 'Changes: derived here'),
+        table('Week 1 vs Week 2 by hub', '<th>Hub</th><th class="num">Attempts</th><th class="num">Utilisation</th><th>Week 2 vs ' + TARGET + '%</th><th class="num">Attempt success rate</th><th class="num">Cost per delivered order</th>', tr),
+        'Changes are simple differences calculated in the browser. Utilisation = Assigned attempts / (available agent-days x 40). Cost per delivered order is agent pay only.');
+    }
+
+    /* ---- daily trend (inline SVG, no library) ---- */
+    function dayLabel(s) { var p = String(s).slice(0, 10).split('-'); return p.length === 3 ? Number(p[2]) + ' Oct' : String(s); }
+    function trend(daily) {
+      if (!daily.length) { return card('Daily trend', '', '', '<div class="empty-state"><strong>No daily data for this selection</strong></div>'); }
+      var dates = []; var hubs = [];
+      daily.forEach(function (r) { var d = String(r.event_date).slice(0, 10); if (dates.indexOf(d) < 0) { dates.push(d); } if (hubs.indexOf(r.hub_id) < 0) { hubs.push(r.hub_id); } });
+      dates.sort();
+      var W = 720, H = 300, L = 48, R = 16, T = 28, B = 34;
+      var max = 0; daily.forEach(function (r) { if (Number(r[metric]) > max) { max = Number(r[metric]); } });
+      var step = max <= 20 ? 5 : max <= 60 ? 10 : max <= 150 ? 25 : max <= 400 ? 50 : 100;
+      var top = Math.max(step, Math.ceil(max / step) * step);
+      function x(i) { return L + (dates.length > 1 ? i * (W - L - R) / (dates.length - 1) : (W - L - R) / 2); }
+      function y(v) { return T + (H - T - B) * (1 - v / top); }
+      var g = '';
+      for (var v = 0; v <= top; v += step) { g += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v) + '" y2="' + y(v) + '" stroke="var(--chart-grid)"/><text x="' + (L - 6) + '" y="' + (y(v) + 4) + '" text-anchor="end" font-size="11" fill="var(--muted)">' + v + '</text>'; }
+      var split = dates.indexOf('2026-10-20');
+      if (split > 0) { g += '<line x1="' + ((x(split - 1) + x(split)) / 2) + '" x2="' + ((x(split - 1) + x(split)) / 2) + '" y1="' + T + '" y2="' + (H - B) + '" stroke="var(--border-strong)" stroke-dasharray="4 3"/><text x="' + (x(split - 1) / 2 + x(split) / 2 - 4) + '" y="' + (T - 14) + '" text-anchor="end" font-size="10" fill="var(--subtle)">Week 1</text><text x="' + ((x(split - 1) + x(split)) / 2 + 4) + '" y="' + (T - 14) + '" font-size="10" fill="var(--subtle)">Week 2</text>'; }
+      dates.forEach(function (d, i) { g += '<text x="' + x(i) + '" y="' + (H - 12) + '" text-anchor="middle" font-size="11" fill="var(--muted)">' + e(dayLabel(d)) + '</text>'; });
+      hubs.sort().forEach(function (h, hi) {
+        var pts = [], dots = '';
+        dates.forEach(function (d, i) {
+          var r = daily.filter(function (z) { return z.hub_id === h && String(z.event_date).slice(0, 10) === d; })[0];
+          if (r && isNum(r[metric])) { pts.push(x(i).toFixed(1) + ',' + y(Number(r[metric])).toFixed(1)); dots += '<circle cx="' + x(i).toFixed(1) + '" cy="' + y(Number(r[metric])).toFixed(1) + '" r="3" fill="' + COLORS[hi % 6] + '"><title>' + e(h + ', ' + dayLabel(d) + ': ' + U().int(r[metric])) + '</title></circle>'; }
+        });
+        g += '<polyline fill="none" stroke="' + COLORS[hi % 6] + '" stroke-width="2" stroke-dasharray="' + DASH[hi % 6] + '" points="' + pts.join(' ') + '"/>' + dots;
+      });
+      var legend = hubs.map(function (h, hi) { return '<span class="cluster" style="gap:.35rem"><svg width="26" height="8" aria-hidden="true"><line x1="0" x2="26" y1="4" y2="4" stroke="' + COLORS[hi % 6] + '" stroke-width="2.5" stroke-dasharray="' + DASH[hi % 6] + '"/></svg><span>' + e(h) + '</span></span>'; }).join('');
+      var seg = '<div class="segmented" role="group" aria-label="Trend measure"><button type="button" data-hp-metric="assigned" aria-pressed="' + (metric === 'assigned') + '">Attempts</button><button type="button" data-hp-metric="delivered" aria-pressed="' + (metric === 'delivered') + '">Delivered</button></div>';
+      var rowsTbl = dates.map(function (d) {
+        return '<tr><td class="nowrap">' + e(dayLabel(d)) + '</td>' + hubs.map(function (h) { var r = daily.filter(function (z) { return z.hub_id === h && String(z.event_date).slice(0, 10) === d; })[0]; return '<td class="num">' + (r ? U().int(r[metric]) : 'n/a') + '</td>'; }).join('') + '</tr>';
+      }).join('');
+      return '<div class="card"><div class="card-head"><div><h3 class="card-title">Daily ' + (metric === 'assigned' ? 'attempts' : 'deliveries') + ' trend</h3><p class="card-sub">Daily ' + (metric === 'assigned' ? 'delivery attempts' : 'deliveries') + ' per hub, 13-26 Oct 2026.</p></div><div class="cluster">' + seg + badge('additional', 'Additional Metric') + '</div></div>' +
+        '<div class="card-body"><div data-chart-host="hubTrend" data-chart-page="hubPerformance" data-metric="' + metric + '"><div class="table-wrap" tabindex="0" role="region" aria-label="Daily trend chart"><div style="min-width:560px"><svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" role="img" aria-label="Line chart of daily ' + (metric === 'assigned' ? 'attempts' : 'deliveries') + ' by hub; the data table below has the same values">' + g + '</svg></div></div></div>' +
+        '<div class="cluster" style="margin-top:.6rem;gap:.4rem 1rem;font-size:.8rem">' + legend + '</div>' +
+        '<details style="margin-top:.6rem"><summary style="cursor:pointer;font-weight:600">View as table</summary>' + table('Daily values', '<th>Date</th>' + hubs.map(function (h) { return '<th class="num">' + e(h) + '</th>'; }).join(''), rowsTbl) + '</details></div></div>';
+    }
+
+    function detail(rows) {
+      var tr = rows.map(function (r) {
+        return '<tr>' + hubCell(r) + '<td>' + wkName(r.week) + '</td><td class="num">' + U().int(r.attempts) + '</td><td class="num">' + U().int(r.agent_days) + '</td>' +
+          '<td class="num nowrap">' + U().pct(r.utilisation_pct) + '</td><td>' + status(r) + '</td>' +
+          '<td class="num">' + U().int(r.delivered) + '</td><td class="num">' + U().pct(share(r)) + '</td>' +
+          '<td class="num">' + U().dec2(r.avg_deliveries_per_agent_day_active) + '</td><td class="num">' + U().dec2(r.avg_deliveries_per_agent_day_calendar) + '</td></tr>';
+      }).join('');
+      return card('Hub-by-week delivery performance', 'One row per hub and week.', badge('approved', 'Attempts, utilisation: Approved Result') + badge('additional', 'Delivered, share, per agent-day: Additional'),
+        table('Hub-by-week delivery performance', '<th>Hub</th><th>Week</th><th class="num">Attempts</th><th class="num">Agent-days</th><th class="num">Utilisation</th><th>vs ' + TARGET + '% target</th><th class="num">Delivered</th><th class="num">Success rate</th><th class="num">Deliveries per working day</th><th class="num">Deliveries per rostered day</th>', tr),
+        'Agent-days here are the available agent-days. Per agent-day figures are the weekly split of the whole-period definition.');
+    }
+
+    function cost(rows) {
+      var tr = rows.map(function (r) {
+        return '<tr>' + hubCell(r) + '<td>' + wkName(r.week) + '</td><td class="num">' + U().int(r.delivered_orders) + '</td>' +
+          '<td class="num nowrap">' + bdt(r.agent_pay_activity_bdt) + '</td><td class="num nowrap">' + bdt2(r.cost_per_delivered_order_activity_primary) + '</td>' +
+          '<td class="num nowrap">' + bdt(r.agent_pay_calendar_bdt) + '</td><td class="num nowrap">' + bdt2(r.cost_per_delivered_order_calendar_comparison) + '</td></tr>';
+      }).join('');
+      return card('Agent-pay cost per hub and week', 'Agent pay only, in BDT.', badge('approved', 'Approved Result'),
+        table('Agent-pay cost', '<th>Hub</th><th>Week</th><th class="num">Delivered orders</th><th class="num">Agent pay</th><th class="num">Cost per delivered order</th><th class="num">Agent pay (all rostered days)</th><th class="num">Cost per order (all rostered days)</th>', tr),
+        'Agent pay counts days with at least one attempt; the "all rostered days" columns count every day on the roster. Agent pay only; one-time and other costs are not included.');
+    }
+
+    function whole(rows) {
+      if (!rows.length) { return ''; }
+      var tr = rows.map(function (r) {
+        return '<tr>' + hubCell(r) + '<td class="num">' + U().int(r.total_assigned) + '</td><td class="num">' + U().int(r.total_deliveries) + '</td><td class="num">' + U().int(r.agent_days_calendar) + '</td>' +
+          '<td class="num">' + U().dec2(r.avg_deliveries_per_agent_day_calendar) + '</td><td class="num">' + U().int(r.agent_days_active) + '</td><td class="num">' + U().dec2(r.avg_deliveries_per_agent_day_active) + '</td></tr>';
+      }).join('');
+      return card('Average deliveries per agent-day (whole period)', '13-26 Oct 2026, both weeks combined.', badge('approved', 'Approved Result'),
+        table('Whole period deliveries per agent-day', '<th>Hub</th><th class="num">Attempts</th><th class="num">Delivered</th><th class="num">Rostered agent-days</th><th class="num">Deliveries per rostered day</th><th class="num">Working agent-days</th><th class="num">Deliveries per working day</th>', tr),
+        'Whole-period result, ignoring the week filter.');
+    }
+
+    function notes(env) {
+      var c = env.data.checks || {};
+      function chip(ok) { return '<span class="chip ' + (ok ? 'chip-good' : 'chip-crit') + '">' + (ok ? 'Match' : 'Mismatch') + '</span>'; }
+      function list(a) { return (a && a.length) ? '<ul>' + a.map(function (t) { return '<li>' + e(t) + '</li>'; }).join('') + '</ul>' : ''; }
+      return '<div class="card"><div class="card-body"><details><summary style="cursor:pointer;font-weight:600">Data checks, notes and limitations</summary><div class="stack" style="margin-top:.6rem">' +
+        '<dl class="kv"><dt>Weekly figures add up to the whole-period figures</dt><dd>' + chip(c.q1WeeklySumsEqualApprovedQ1) + '</dd><dt>Delivered orders match across cost and productivity tables</dt><dd>' + chip(c.q6DeliveredEqualsQ1WeeklyDeliveries) + '</dd><dt>Attempts match across utilisation and productivity tables</dt><dd>' + chip(c.q2AttemptsEqualQ1WeeklyAttempts) + '</dd></dl>' +
+        '<div><div class="section-title">Notes for this page</div>' + list(env.data.notes) + '</div><div><div class="section-title">Limitations</div>' + list(env.limitations) + '</div></div></details>' +
+        '<p class="legend-note" style="margin-top:.5rem">Generated ' + e(env.generatedAt || '') + '</p></div></div>';
+    }
+
+    function render(env) {
+      last = env;
+      var d = env && env.data;
+      if (!d || !d.hubWeek || !d.hubWeek.length) {
+        body.innerHTML = '<div class="empty-state"><strong>No hubs match the current filters</strong><span>Reset the filters or choose another hub or cluster.</span></div>';
+        return;
+      }
+      body.innerHTML = kpis(d.hubWeek) + comparison(d.hubWeek) + trend(d.daily || []) + detail(d.hubWeek) + cost(d.hubWeek) + whole(d.q1WholePeriod || []) + notes(env);
+      Array.prototype.forEach.call(body.querySelectorAll('[data-hp-metric]'), function (b) {
+        b.addEventListener('click', function () { metric = b.getAttribute('data-hp-metric'); render(last); var nb = body.querySelector('[data-hp-metric="' + metric + '"]'); if (nb) { nb.focus(); } });
+      });
+    }
+    function onData(detail) {
+      if (detail.page !== 'hubPerformance') { return; }
+      if (detail.status === 'ready' && detail.envelope) { render(detail.envelope); }
+      else if (detail.status === 'error') { body.textContent = ''; }
+    }
+    document.addEventListener('dash:data', function (ev) { onData(ev.detail); });
+    document.addEventListener('DOMContentLoaded', function () {
+      if (window.DashApp) { var s = window.DashApp.getPageState('hubPerformance'); onData({ page: 'hubPerformance', status: s.status, envelope: s.envelope }); }
+    });
+  })();
+  </script>
+</section>
