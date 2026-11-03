@@ -24,7 +24,7 @@ Delivery OTG Dashboard is a backend-driven operational analytics system built us
 - `docs/screenshots/` — Analytical layout interface snapshots.
 
 ## Live Demo
-[Open Live Dashboard](https://github.io)
+[Open Live Dashboard](https://raihann63.github.io/delivery-otg-dashboard/)
 
 ## Deployment Setup
 1. Mount the core ecosystem within the Google Sheets dataset extensions.
